@@ -1,5 +1,6 @@
 import os
 import requests
+from bs4 import BeautifulSoup
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
@@ -27,10 +28,29 @@ def main():
             f"Rockstar-Seite konnte nicht geladen werden: {response.status_code}"
         )
 
-    message = (
-        "🚗 **LS-Insider – Verbindungstest**\n\n"
-        "✅ Die offizielle deutsche Rockstar-News-Seite wurde erfolgreich erreicht!"
-    )
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    links = soup.find_all("a")
+
+    gta_article = None
+
+    for link in links:
+        text = link.get_text(" ", strip=True)
+
+        if "GTA Online" in text and text:
+            gta_article = text
+            break
+
+    if gta_article:
+        message = (
+            "🚗 **LS-Insider – Rockstar News**\n\n"
+            f"📰 {gta_article}"
+        )
+    else:
+        message = (
+            "🚗 **LS-Insider – Rockstar News**\n\n"
+            "⚠️ Kein GTA-Online-Artikel gefunden."
+        )
 
     send_to_discord(message)
 
