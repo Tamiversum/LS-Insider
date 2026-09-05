@@ -22,24 +22,34 @@ def main():
     response = requests.get(
         ROCKSTAR_URL,
         headers={
-            "User-Agent": "Mozilla/5.0"
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "text/html,application/xhtml+xml"
         }
     )
 
-    # Wir zeigen nur technische Informationen an,
-    # keine komplette Rockstar-Seite.
     text = response.text
 
+    # Suche nach möglichen API-Adressen im HTML
+    keywords = [
+        "api",
+        "newswire",
+        "graphql",
+        "article"
+    ]
+
+    found = []
+
+    for keyword in keywords:
+        if keyword.lower() in text.lower():
+            found.append(keyword)
+
     message = (
-        "🔍 **LS-Insider – Rockstar Diagnose**\n\n"
+        "🔍 **LS-Insider – API-Diagnose**\n\n"
         f"HTTP-Status: `{response.status_code}`\n"
         f"Antwortlänge: `{len(text)}` Zeichen\n\n"
-        f"HTML enthält `GTA Online`: "
-        f"`{'GTA Online' in text}`\n"
-        f"HTML enthält `Business`: "
-        f"`{'Business' in text}`\n"
-        f"HTML enthält `Rockstar`: "
-        f"`{'Rockstar' in text}`"
+        f"Gefundene Begriffe: `{', '.join(found) if found else 'keine'}`\n\n"
+        "📡 Rockstar lädt die eigentlichen News vermutlich über eine "
+        "separate API."
     )
 
     send_to_discord(message)
