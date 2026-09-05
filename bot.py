@@ -31,13 +31,11 @@ async def get_rockstar_news():
             locale="de-DE"
         )
 
-        await page.goto(
-            ROCKSTAR_URL,
-            wait_until="networkidle",
-            timeout=60000
-        )
-
-        await page.wait_for_timeout(5000)
+       await page.goto(
+    ROCKSTAR_URL,
+    wait_until="domcontentloaded",
+    timeout=60000
+)
 
         # Alle sichtbaren Überschriften auslesen
         headlines = await page.locator(
