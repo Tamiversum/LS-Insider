@@ -4,15 +4,18 @@ from bs4 import BeautifulSoup
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
-ROCKSTAR_URL = "https://www.rockstargames.com/de/newswire?tag_id=735"
+ROCKSTAR_ARTICLE_URL = (
+    "https://www.rockstargames.com/de/newswire/article/"
+    "ak43aoa18a19o2/"
+    "compete-across-entrepreneurial-endeavors-in-the-gta-online-business-ri"
+)
 
 
 def send_to_discord(message):
-    data = {
-        "content": message
-    }
-
-    response = requests.post(WEBHOOK_URL, json=data)
+    response = requests.post(
+        WEBHOOK_URL,
+        json={"content": message}
+    )
 
     if response.status_code not in (200, 204):
         raise Exception(
@@ -22,39 +25,29 @@ def send_to_discord(message):
 
 def main():
     response = requests.get(
-        ROCKSTAR_URL,
-        headers={
-            "User-Agent": "Mozilla/5.0"
-        }
+        ROCKSTAR_ARTICLE_URL,
+        headers={"User-Agent": "Mozilla/5.0"}
     )
 
     if response.status_code != 200:
         raise Exception(
-            f"Rockstar-Seite konnte nicht geladen werden: {response.status_code}"
+            f"Rockstar-Artikel konnte nicht geladen werden: "
+            f"{response.status_code}"
         )
 
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # Wir suchen Überschriften der Newswire-Seite
-    headlines = []
+    title = soup.find("h1")
 
-    for heading in soup.find_all(["h1", "h2", "h3"]):
-        text = heading.get_text(" ", strip=True)
-
-        if text and text not in headlines:
-            headlines.append(text)
-
-    if headlines:
-        message = (
-            "🚗 **LS-Insider – Rockstar News**\n\n"
-            "📰 **Gefundene News:**\n\n"
-            + "\n".join(f"• {headline}" for headline in headlines[:5])
-        )
+    if title:
+        title_text = title.get_text(" ", strip=True)
     else:
-        message = (
-            "🚗 **LS-Insider – Rockstar News**\n\n"
-            "⚠️ Rockstar hat keine Überschriften geliefert."
-        )
+        title_text = "Kein Titel gefunden."
+
+    message = (
+        "🚗 **LS-Insider – Rockstar News**\n\n"
+        f"📰 **{title_text}**"
+    )
 
     send_to_discord(message)
 
