@@ -27,18 +27,16 @@ if response.status_code not in (200, 204):
 ```
 
 def load_last_article():
-"""Liest die zuletzt gepostete Artikel-URL."""
+try:
+if os.path.exists(LAST_ARTICLE_FILE):
+with open(
+LAST_ARTICLE_FILE,
+"r",
+encoding="utf-8"
+) as file:
+return file.read().strip()
 
 ```
-try:
-    if os.path.exists(LAST_ARTICLE_FILE):
-        with open(
-            LAST_ARTICLE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
-            return file.read().strip()
-
 except Exception as error:
     print(
         f"⚠️ Konnte gespeicherten Artikel nicht lesen: {error}"
@@ -48,17 +46,15 @@ return ""
 ```
 
 def save_last_article(article_url):
-"""Speichert die zuletzt gepostete Artikel-URL."""
+try:
+with open(
+LAST_ARTICLE_FILE,
+"w",
+encoding="utf-8"
+) as file:
+file.write(article_url)
 
 ```
-try:
-    with open(
-        LAST_ARTICLE_FILE,
-        "w",
-        encoding="utf-8"
-    ) as file:
-        file.write(article_url)
-
 except Exception as error:
     print(
         f"⚠️ Konnte Artikel nicht speichern: {error}"
@@ -121,7 +117,6 @@ articles = await page.locator(
 
 ```
 for article in articles:
-
     try:
         title = clean_text(
             await article.inner_text()
@@ -155,18 +150,16 @@ return None
 ```
 
 def detect_date(lines):
-
-```
 date_pattern = re.compile(
-    r"\b\d{1,2}\.\s+"
-    r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|"
-    r"Oktober|November|Dezember)"
-    r"\s+\d{4}\b",
-    re.IGNORECASE
+r"\b\d{1,2}.\s+"
+r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|"
+r"Oktober|November|Dezember)"
+r"\s+\d{4}\b",
+re.IGNORECASE
 )
 
+```
 for line in lines:
-
     match = date_pattern.search(line)
 
     if match:
@@ -176,21 +169,18 @@ return ""
 ```
 
 def detect_event_period(text):
+patterns = [
+r"\b\d{1,2}.\s*[–-]\s*\d{1,2}.\s*"
+r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|"
+r"Oktober|November|Dezember)\b",
 
 ```
-patterns = [
-
-    r"\b\d{1,2}\.\s*[–-]\s*\d{1,2}\.\s*"
-    r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|"
-    r"Oktober|November|Dezember)\b",
-
     r"\b\d{1,2}\.\s*bis\s*\d{1,2}\.\s*"
     r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|"
     r"Oktober|November|Dezember)\b"
 ]
 
 for pattern in patterns:
-
     match = re.search(
         pattern,
         text,
@@ -204,14 +194,11 @@ return ""
 ```
 
 def classify_section(heading, text):
-
-```
 combined = (
-    heading + " " + text
+heading + " " + text
 ).lower()
 
-# 💰 BONI
-
+```
 bonus_keywords = [
     "bonus",
     "boni",
@@ -235,8 +222,6 @@ if any(
 ):
     return "money"
 
-# 🎁 KOSTENLOS
-
 free_keywords = [
     "kostenlos",
     "kostenlose",
@@ -253,8 +238,6 @@ if any(
     for keyword in free_keywords
 ):
     return "free"
-
-# 🚗 FAHRZEUGE
 
 vehicle_keywords = [
     "fahrzeug",
@@ -275,8 +258,6 @@ if any(
     for keyword in vehicle_keywords
 ):
     return "vehicles"
-
-# 🏷️ RABATTE
 
 discount_keywords = [
     "rabatt",
@@ -299,33 +280,27 @@ return "other"
 ```
 
 async def read_article(page, article_url):
-
-```
 await page.goto(
-    article_url,
-    wait_until="domcontentloaded",
-    timeout=60000
+article_url,
+wait_until="domcontentloaded",
+timeout=60000
 )
 
+```
 await page.wait_for_timeout(5000)
 
 await accept_cookies(page)
 
 await page.wait_for_timeout(2000)
 
-# TITEL
-
 title = ""
 
 title_locator = page.locator("h1")
 
 if await title_locator.count() > 0:
-
     title = clean_text(
         await title_locator.first.inner_text()
     )
-
-# BODY
 
 body_text = await page.locator(
     "body"
@@ -337,17 +312,11 @@ lines = [
     if clean_text(line)
 ]
 
-# DATUM
-
 date = detect_date(lines)
-
-# EVENTZEITRAUM
 
 event_period = detect_event_period(
     body_text
 )
-
-# ABSCHNITTE
 
 sections = []
 
@@ -356,9 +325,7 @@ heading_elements = await page.locator(
 ).all()
 
 for heading_element in heading_elements:
-
     try:
-
         heading = clean_text(
             await heading_element.inner_text()
         )
@@ -371,7 +338,6 @@ for heading_element in heading_elements:
         current = heading_element
 
         for _ in range(15):
-
             current = current.locator(
                 "xpath=following-sibling::*[1]"
             )
@@ -387,7 +353,6 @@ for heading_element in heading_elements:
                 break
 
             if tag_name in ("p", "li"):
-
                 text = clean_text(
                     await current.inner_text()
                 )
@@ -403,7 +368,6 @@ for heading_element in heading_elements:
             section_text
             or len(heading) > 3
         ):
-
             sections.append({
                 "heading": heading,
                 "text": section_text
@@ -412,10 +376,7 @@ for heading_element in heading_elements:
     except Exception:
         pass
 
-# FALLBACK
-
 if not sections:
-
     paragraphs = await page.locator(
         "p"
     ).all_inner_texts()
@@ -425,9 +386,7 @@ if not sections:
     )
 
     for paragraph in clean_paragraphs:
-
         if len(paragraph) >= 40:
-
             sections.append({
                 "heading": "",
                 "text": paragraph
@@ -443,18 +402,16 @@ return {
 ```
 
 def classify_article(article):
-
-```
 results = {
-    "money": [],
-    "free": [],
-    "vehicles": [],
-    "discounts": [],
-    "other": []
+"money": [],
+"free": [],
+"vehicles": [],
+"discounts": [],
+"other": []
 }
 
+```
 for section in article["sections"]:
-
     category = classify_section(
         section["heading"],
         section["text"]
@@ -468,12 +425,11 @@ return results
 ```
 
 def format_section(section):
-
-```
 heading = clean_text(
-    section.get("heading", "")
+section.get("heading", "")
 )
 
+```
 text = clean_text(
     section.get("text", "")
 )
@@ -497,11 +453,10 @@ title,
 items,
 max_items=4
 ):
+if not items:
+return message
 
 ```
-if not items:
-    return message
-
 message += (
     f"{emoji} **{title}**\n"
 )
@@ -509,7 +464,6 @@ message += (
 added = 0
 
 for item in items:
-
     formatted = format_section(
         item
     )
@@ -538,12 +492,11 @@ return message
 ```
 
 def build_message(article):
-
-```
 matches = classify_article(
-    article
+article
 )
 
+```
 title = article["title"]
 
 if not title:
@@ -555,21 +508,15 @@ message = (
     f"📰 **{title}**\n\n"
 )
 
-# 📅 EVENTWOCHE
-
 if article["event_period"]:
-
     message += (
         "📅 **Aktuelle Eventwoche**\n"
         f"• {article['event_period']}\n\n"
     )
 
-# 📝 EINLEITUNG
-
 intro = ""
 
 for section in article["sections"]:
-
     if not section["text"]:
         continue
 
@@ -579,12 +526,10 @@ for section in article["sections"]:
     )
 
     if category == "other":
-
         intro = section["text"]
         break
 
 if intro:
-
     if len(intro) > 600:
         intro = (
             intro[:597]
@@ -596,8 +541,6 @@ if intro:
         f"{intro}\n\n"
     )
 
-# 💰 BONI
-
 message = add_category(
     message,
     "💰",
@@ -605,8 +548,6 @@ message = add_category(
     matches["money"],
     5
 )
-
-# 🎁 KOSTENLOS
 
 message = add_category(
     message,
@@ -616,8 +557,6 @@ message = add_category(
     5
 )
 
-# 🚗 FAHRZEUGE
-
 message = add_category(
     message,
     "🚗",
@@ -626,8 +565,6 @@ message = add_category(
     5
 )
 
-# 🏷️ RABATTE
-
 message = add_category(
     message,
     "🏷️",
@@ -635,8 +572,6 @@ message = add_category(
     matches["discounts"],
     5
 )
-
-# 🔎 WEITERE HIGHLIGHTS
 
 ignored_headings = [
     "rockstar games",
@@ -651,7 +586,6 @@ ignored_headings = [
 other_items = []
 
 for item in matches["other"]:
-
     heading = clean_text(
         item.get("heading", "")
     )
@@ -667,29 +601,22 @@ for item in matches["other"]:
     )
 
 if other_items:
-
     message += (
         "🔎 **Weitere Highlights**\n"
     )
 
     for heading in other_items[:5]:
-
         message += (
             f"• {heading}\n"
         )
 
     message += "\n"
 
-# 📌 VERÖFFENTLICHUNG
-
 if article["date"]:
-
     message += (
         f"📌 **Veröffentlicht:** "
         f"{article['date']}\n\n"
     )
-
-# 🔗 ORIGINAL-LINK
 
 message += (
     "🔗 **Vollständiger "
@@ -697,10 +624,7 @@ message += (
     f"{article['url']}"
 )
 
-# DISCORD-LIMIT
-
 if len(message) > DISCORD_LIMIT:
-
     link = (
         "\n🔗 **Vollständiger "
         "Rockstar-Artikel:**\n"
@@ -736,7 +660,6 @@ async with async_playwright() as p:
     )
 
     try:
-
         await page.goto(
             ROCKSTAR_URL,
             wait_until="domcontentloaded",
@@ -772,7 +695,6 @@ async with async_playwright() as p:
         return article
 
     finally:
-
         await browser.close()
 ```
 
@@ -780,7 +702,6 @@ async def main():
 
 ```
 try:
-
     print(
         "🔎 Suche nach aktuellem "
         "GTA-Online-Artikel..."
@@ -789,7 +710,6 @@ try:
     article = await get_latest_news()
 
     if not article:
-
         message = (
             "🚗 **LS-Insider – "
             "GTA Online News**\n\n"
@@ -809,18 +729,12 @@ try:
         load_last_article()
     )
 
-    # 🔒 DUPLIKAT-SPERRE
-
     if article_url == last_article:
-
         print(
             "⏭️ Artikel wurde bereits "
             "gepostet. Nichts senden."
         )
-
         return
-
-    # 🆕 NEUER ARTIKEL
 
     message = build_message(
         article
@@ -829,9 +743,6 @@ try:
     send_to_discord(
         message
     )
-
-    # Erst NACH erfolgreichem
-    # Discord-Versand speichern.
 
     save_last_article(
         article_url
@@ -843,7 +754,6 @@ try:
     )
 
 except Exception as error:
-
     print(
         f"❌ Fehler: {error}"
     )
