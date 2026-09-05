@@ -22,22 +22,18 @@ def send_to_discord(message):
 
 async def get_rockstar_news():
     async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
 
-        browser = await p.chromium.launch(
-            headless=True
+        page = await browser.new_page(locale="de-DE")
+
+        await page.goto(
+            ROCKSTAR_URL,
+            wait_until="domcontentloaded",
+            timeout=60000
         )
 
-        page = await browser.new_page(
-            locale="de-DE"
-        )
+        await page.wait_for_timeout(5000)
 
-       await page.goto(
-    ROCKSTAR_URL,
-    wait_until="domcontentloaded",
-    timeout=60000
-)
-
-        # Alle sichtbaren Überschriften auslesen
         headlines = await page.locator(
             "h1, h2, h3"
         ).all_inner_texts()
@@ -62,7 +58,6 @@ async def main():
 
         for headline in headlines[:5]:
             message += f"• {headline}\n"
-
     else:
         message = (
             "🚗 **LS-Insider – Rockstar News**\n\n"
