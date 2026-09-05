@@ -1,6 +1,7 @@
 import os
 import asyncio
 import requests
+import re
 from playwright.async_api import async_playwright
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
@@ -63,17 +64,16 @@ async def find_latest_gta_article(page):
             if "/newswire/article/" not in link:
                 continue
 
-            # Wir suchen den neuesten GTA-Online-Artikel.
             if "GTA Online" in title:
                 if link.startswith("/"):
                     link = "https://www.rockstargames.com" + link
 
-                return title, link
+                return link
 
         except Exception:
             pass
 
-    return None, None
+    return None
 
 
 async def read_article(page, article_url):
@@ -98,9 +98,6 @@ async def read_article(page, article_url):
 
     title = title.strip()
 
-    # Datum suchen
-    date = ""
-
     body_text = await page.locator("body").inner_text()
 
     lines = [
@@ -109,9 +106,21 @@ async def read_article(page, article_url):
         if line.strip()
     ]
 
+    # Datum erkennen
+    date = ""
+
+    date_pattern = re.compile(
+        r"\b\d{1,2}\.\s+"
+        r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|"
+        r"Oktober|November|Dezember)"
+        r"\s+\d{4}\b"
+    )
+
     for line in lines:
-        if "September 2026" in line:
-            date = line
+        match = date_pattern.search(line)
+
+        if match:
+            date = match.group(0)
             break
 
     # Überschriften sammeln
@@ -131,7 +140,7 @@ async def read_article(page, article_url):
         ):
             clean_headings.append(heading)
 
-    # Erste sinnvolle Absätze sammeln
+    # Absätze sammeln
     paragraphs = await page.locator(
         "p"
     ).all_inner_texts()
@@ -151,9 +160,191 @@ async def read_article(page, article_url):
     return {
         "title": title,
         "date": date,
-        "headings": clean_headings[:8],
-        "paragraphs": clean_paragraphs[:5]
+        "headings": clean_headings,
+        "paragraphs": clean_paragraphs,
+        "url": article_url
     }
+
+
+def find_matching_items(article):
+    """
+    Sucht wichtige Informationen im Artikel.
+    """
+
+    text = " ".join(article["paragraphs"])
+    text += " " + " ".join(article["headings"])
+
+    results = {
+        "money": [],
+        "free": [],
+        "vehicles": [],
+        "discounts": [],
+        "weekly": []
+    }
+
+    # GTA$ / RP
+    money_keywords = [
+        "GTA$",
+        "GTA $",
+        "RP",
+        "Belohnungen",
+        "Bonus",
+        "dreifache Belohnungen",
+        "doppelte Belohnungen"
+    ]
+
+    # Kostenlos
+    free_keywords = [
+        "kostenlos",
+        "kostenfreie",
+        "gratis",
+        "kostenlose",
+        "Geschenk"
+    ]
+
+    # Fahrzeuge
+    vehicle_keywords = [
+        "Fahrzeug",
+        "SUV",
+        "Sportwagen",
+        "Motorrad",
+        "Wagen",
+        "Auto"
+    ]
+
+    # Rabatte
+    discount_keywords = [
+        "Rabatt",
+        "Rabatte",
+        "reduziert",
+        "Preisnachlass"
+    ]
+
+    # Wocheninformationen
+    weekly_keywords = [
+        "3. September",
+        "4. September",
+        "5. September",
+        "6. September",
+        "7. September",
+        "8. September",
+        "9. September"
+    ]
+
+    for heading in article["headings"]:
+        lower = heading.lower()
+
+        if any(
+            keyword.lower() in lower
+            for keyword in money_keywords
+        ):
+            results["money"].append(heading)
+
+        if any(
+            keyword.lower() in lower
+            for keyword in free_keywords
+        ):
+            results["free"].append(heading)
+
+        if any(
+            keyword.lower() in lower
+            for keyword in vehicle_keywords
+        ):
+            results["vehicles"].append(heading)
+
+        if any(
+            keyword.lower() in lower
+            for keyword in discount_keywords
+        ):
+            results["discounts"].append(heading)
+
+        if any(
+            keyword.lower() in lower
+            for keyword in weekly_keywords
+        ):
+            results["weekly"].append(heading)
+
+    return results
+
+
+def add_unique(items, value):
+    if value and value not in items:
+        items.append(value)
+
+
+def build_message(article):
+    matches = find_matching_items(article)
+
+    message = (
+        "🚗 **LS-Insider – GTA Online Eventwoche**\n\n"
+        f"📰 **{article['title']}**\n\n"
+    )
+
+    if article["date"]:
+        message += (
+            f"📅 **Veröffentlicht:** {article['date']}\n\n"
+        )
+
+    if article["paragraphs"]:
+        summary = article["paragraphs"][0]
+
+        if len(summary) > 700:
+            summary = summary[:700] + "..."
+
+        message += (
+            "📝 **Kurz zusammengefasst:**\n"
+            f"{summary}\n\n"
+        )
+
+    if matches["money"]:
+        message += "💰 **GTA$ & RP:**\n"
+
+        for item in matches["money"][:5]:
+            message += f"• {item}\n"
+
+        message += "\n"
+
+    if matches["free"]:
+        message += "🎁 **Kostenlos:**\n"
+
+        for item in matches["free"][:5]:
+            message += f"• {item}\n"
+
+        message += "\n"
+
+    if matches["vehicles"]:
+        message += "🚗 **Fahrzeuge:**\n"
+
+        for item in matches["vehicles"][:5]:
+            message += f"• {item}\n"
+
+        message += "\n"
+
+    if matches["discounts"]:
+        message += "🏷️ **Rabatte:**\n"
+
+        for item in matches["discounts"][:5]:
+            message += f"• {item}\n"
+
+        message += "\n"
+
+    message += (
+        "📌 **Weitere Informationen:**\n"
+    )
+
+    for heading in article["headings"][:5]:
+        message += f"• {heading}\n"
+
+    message += (
+        "\n🔗 **Zum Rockstar-Artikel:**\n"
+        f"{article['url']}"
+    )
+
+    # Discord-Limit
+    if len(message) > 1950:
+        message = message[:1940] + "\n..."
+
+    return message
 
 
 async def get_latest_news():
@@ -179,7 +370,9 @@ async def get_latest_news():
 
         await page.wait_for_timeout(3000)
 
-        title, article_url = await find_latest_gta_article(page)
+        article_url = await find_latest_gta_article(
+            page
+        )
 
         if not article_url:
             await browser.close()
@@ -189,8 +382,6 @@ async def get_latest_news():
             page,
             article_url
         )
-
-        article["url"] = article_url
 
         await browser.close()
 
@@ -209,38 +400,7 @@ async def main():
         send_to_discord(message)
         return
 
-    message = (
-        "🚗 **LS-Insider – GTA Online Eventwoche**\n\n"
-        f"📰 **{article['title']}**\n\n"
-    )
-
-    if article["date"]:
-        message += f"📅 **Datum:** {article['date']}\n\n"
-
-    if article["paragraphs"]:
-        message += "📝 **Zusammenfassung:**\n\n"
-
-        # Nur die wichtigsten ersten Absätze
-        summary = article["paragraphs"][0]
-
-        if len(summary) > 900:
-            summary = summary[:900] + "..."
-
-        message += summary + "\n\n"
-
-    if article["headings"]:
-        message += "📌 **Artikel enthält:**\n"
-
-        for heading in article["headings"][:6]:
-            message += f"• {heading}\n"
-
-        message += "\n"
-
-    message += f"🔗 **Zum Rockstar-Artikel:**\n{article['url']}"
-
-    # Discord-Nachrichten dürfen maximal 2000 Zeichen haben.
-    if len(message) > 1950:
-        message = message[:1940] + "\n..."
+    message = build_message(article)
 
     send_to_discord(message)
 
