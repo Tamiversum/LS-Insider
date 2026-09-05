@@ -3,11 +3,7 @@ import requests
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
-# Hier werden später die GTA-News/Daten verarbeitet.
-# Diese Funktion übersetzt den Text ins Deutsche.
-def translate_to_german(text):
-    # Platzhalter – die Übersetzung bauen wir im nächsten Schritt ein.
-    return text
+ROCKSTAR_URL = "https://www.rockstargames.com/de/newswire?tag_id=735"
 
 
 def send_to_discord(message):
@@ -24,12 +20,19 @@ def send_to_discord(message):
 
 
 def main():
-    # Testnachricht
-    message = "🚗 **LS-Insider – GTA Eventwoche**\n\nDer Bot ist erfolgreich eingerichtet! 🎉"
+    response = requests.get(ROCKSTAR_URL)
 
-    german_message = translate_to_german(message)
+    if response.status_code != 200:
+        raise Exception(
+            f"Rockstar-Seite konnte nicht geladen werden: {response.status_code}"
+        )
 
-    send_to_discord(german_message)
+    message = (
+        "🚗 **LS-Insider – Verbindungstest**\n\n"
+        "✅ Die offizielle deutsche Rockstar-News-Seite wurde erfolgreich erreicht!"
+    )
+
+    send_to_discord(message)
 
 
 if __name__ == "__main__":
