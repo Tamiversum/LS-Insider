@@ -1,9 +1,21 @@
 import os
 import requests
+import json
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
-ROCKSTAR_URL = "https://www.rockstargames.com/de/newswire"
+GRAPHQL_URL = "https://graph.rockstargames.com/"
+
+QUERY = """
+query NewswireList($locale: String!, $index: Boolean!) {
+    newswire(locale: $locale, index: $index) {
+        results {
+            title
+            url
+        }
+    }
+}
+"""
 
 
 def send_to_discord(message):
@@ -19,37 +31,28 @@ def send_to_discord(message):
 
 
 def main():
-    response = requests.get(
-        ROCKSTAR_URL,
+    response = requests.post(
+        GRAPHQL_URL,
+        json={
+            "query": QUERY,
+            "variables": {
+                "locale": "de",
+                "index": True
+            }
+        },
         headers={
             "User-Agent": "Mozilla/5.0",
-            "Accept": "text/html,application/xhtml+xml"
+            "Origin": "https://www.rockstargames.com",
+            "Referer": "https://www.rockstargames.com/"
         }
     )
 
-    text = response.text
-
-    # Suche nach möglichen API-Adressen im HTML
-    keywords = [
-        "api",
-        "newswire",
-        "graphql",
-        "article"
-    ]
-
-    found = []
-
-    for keyword in keywords:
-        if keyword.lower() in text.lower():
-            found.append(keyword)
-
     message = (
-        "🔍 **LS-Insider – API-Diagnose**\n\n"
-        f"HTTP-Status: `{response.status_code}`\n"
-        f"Antwortlänge: `{len(text)}` Zeichen\n\n"
-        f"Gefundene Begriffe: `{', '.join(found) if found else 'keine'}`\n\n"
-        "📡 Rockstar lädt die eigentlichen News vermutlich über eine "
-        "separate API."
+        "🔍 **LS-Insider – GraphQL-Test**\n\n"
+        f"HTTP-Status: `{response.status_code}`\n\n"
+        f"Antwort:\n```json\n"
+        f"{response.text[:1500]}\n"
+        f"```"
     )
 
     send_to_discord(message)
