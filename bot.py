@@ -21,7 +21,12 @@ def send_to_discord(message):
 
 
 def main():
-    response = requests.get(ROCKSTAR_URL)
+    response = requests.get(
+        ROCKSTAR_URL,
+        headers={
+            "User-Agent": "Mozilla/5.0"
+        }
+    )
 
     if response.status_code != 200:
         raise Exception(
@@ -30,26 +35,25 @@ def main():
 
     soup = BeautifulSoup(response.text, "html.parser")
 
-    links = soup.find_all("a")
+    # Wir suchen Überschriften der Newswire-Seite
+    headlines = []
 
-    gta_article = None
+    for heading in soup.find_all(["h1", "h2", "h3"]):
+        text = heading.get_text(" ", strip=True)
 
-    for link in links:
-        text = link.get_text(" ", strip=True)
+        if text and text not in headlines:
+            headlines.append(text)
 
-        if "GTA Online" in text and text:
-            gta_article = text
-            break
-
-    if gta_article:
+    if headlines:
         message = (
             "🚗 **LS-Insider – Rockstar News**\n\n"
-            f"📰 {gta_article}"
+            "📰 **Gefundene News:**\n\n"
+            + "\n".join(f"• {headline}" for headline in headlines[:5])
         )
     else:
         message = (
             "🚗 **LS-Insider – Rockstar News**\n\n"
-            "⚠️ Kein GTA-Online-Artikel gefunden."
+            "⚠️ Rockstar hat keine Überschriften geliefert."
         )
 
     send_to_discord(message)
