@@ -21,6 +21,9 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install -r requirements.txt
 
+      - name: Chromium installieren
+        run: playwright install --with-deps chromium
+
       - name: LS-Insider starten
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
