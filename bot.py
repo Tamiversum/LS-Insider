@@ -1,6 +1,7 @@
 import os
-import re
+import asyncio
 import requests
+from playwright.async_api import async_playwright
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
@@ -19,34 +20,59 @@ def send_to_discord(message):
         )
 
 
-def main():
-    response = requests.get(
-        ROCKSTAR_URL,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "text/html,application/xhtml+xml"
-        }
-    )
+async def get_rockstar_news():
+    async with async_playwright() as p:
 
-    html = response.text
+        browser = await p.chromium.launch(
+            headless=True
+        )
 
-    scripts = re.findall(
-        r'<script[^>]+src=["\']([^"\']+)["\']',
-        html,
-        re.IGNORECASE
-    )
+        page = await browser.new_page(
+            locale="de-DE"
+        )
 
-    message = (
-        "🔎 **LS-Insider – Rockstar Script-Diagnose**\n\n"
-        f"HTTP-Status: `{response.status_code}`\n"
-        f"Gefundene JavaScript-Dateien: `{len(scripts)}`\n\n"
-    )
+        await page.goto(
+            ROCKSTAR_URL,
+            wait_until="networkidle",
+            timeout=60000
+        )
 
-    for script in scripts[:10]:
-        message += f"• `{script}`\n"
+        await page.wait_for_timeout(5000)
+
+        # Alle sichtbaren Überschriften auslesen
+        headlines = await page.locator(
+            "h1, h2, h3"
+        ).all_inner_texts()
+
+        await browser.close()
+
+        return [
+            headline.strip()
+            for headline in headlines
+            if headline.strip()
+        ]
+
+
+async def main():
+    headlines = await get_rockstar_news()
+
+    if headlines:
+        message = (
+            "🚗 **LS-Insider – Rockstar News**\n\n"
+            "📰 **Aktuelle Rockstar-News:**\n\n"
+        )
+
+        for headline in headlines[:5]:
+            message += f"• {headline}\n"
+
+    else:
+        message = (
+            "🚗 **LS-Insider – Rockstar News**\n\n"
+            "⚠️ Keine News gefunden."
+        )
 
     send_to_discord(message)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
