@@ -1,14 +1,9 @@
 import os
 import requests
-from bs4 import BeautifulSoup
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
-ROCKSTAR_ARTICLE_URL = (
-    "https://www.rockstargames.com/de/newswire/article/"
-    "ak43aoa18a19o2/"
-    "compete-across-entrepreneurial-endeavors-in-the-gta-online-business-ri"
-)
+ROCKSTAR_URL = "https://www.rockstargames.com/de/newswire"
 
 
 def send_to_discord(message):
@@ -25,28 +20,26 @@ def send_to_discord(message):
 
 def main():
     response = requests.get(
-        ROCKSTAR_ARTICLE_URL,
-        headers={"User-Agent": "Mozilla/5.0"}
+        ROCKSTAR_URL,
+        headers={
+            "User-Agent": "Mozilla/5.0"
+        }
     )
 
-    if response.status_code != 200:
-        raise Exception(
-            f"Rockstar-Artikel konnte nicht geladen werden: "
-            f"{response.status_code}"
-        )
-
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    title = soup.find("h1")
-
-    if title:
-        title_text = title.get_text(" ", strip=True)
-    else:
-        title_text = "Kein Titel gefunden."
+    # Wir zeigen nur technische Informationen an,
+    # keine komplette Rockstar-Seite.
+    text = response.text
 
     message = (
-        "🚗 **LS-Insider – Rockstar News**\n\n"
-        f"📰 **{title_text}**"
+        "🔍 **LS-Insider – Rockstar Diagnose**\n\n"
+        f"HTTP-Status: `{response.status_code}`\n"
+        f"Antwortlänge: `{len(text)}` Zeichen\n\n"
+        f"HTML enthält `GTA Online`: "
+        f"`{'GTA Online' in text}`\n"
+        f"HTML enthält `Business`: "
+        f"`{'Business' in text}`\n"
+        f"HTML enthält `Rockstar`: "
+        f"`{'Rockstar' in text}`"
     )
 
     send_to_discord(message)
