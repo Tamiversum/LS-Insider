@@ -1,21 +1,10 @@
 import os
+import re
 import requests
-import json
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
-GRAPHQL_URL = "https://graph.rockstargames.com/"
-
-QUERY = """
-query NewswireList($locale: String!, $index: Boolean!) {
-    newswire(locale: $locale, index: $index) {
-        results {
-            title
-            url
-        }
-    }
-}
-"""
+ROCKSTAR_URL = "https://www.rockstargames.com/de/newswire?tag_id=735"
 
 
 def send_to_discord(message):
@@ -31,29 +20,30 @@ def send_to_discord(message):
 
 
 def main():
-    response = requests.post(
-        GRAPHQL_URL,
-        json={
-            "query": QUERY,
-            "variables": {
-                "locale": "de",
-                "index": True
-            }
-        },
+    response = requests.get(
+        ROCKSTAR_URL,
         headers={
             "User-Agent": "Mozilla/5.0",
-            "Origin": "https://www.rockstargames.com",
-            "Referer": "https://www.rockstargames.com/"
+            "Accept": "text/html,application/xhtml+xml"
         }
     )
 
-    message = (
-        "🔍 **LS-Insider – GraphQL-Test**\n\n"
-        f"HTTP-Status: `{response.status_code}`\n\n"
-        f"Antwort:\n```json\n"
-        f"{response.text[:1500]}\n"
-        f"```"
+    html = response.text
+
+    scripts = re.findall(
+        r'<script[^>]+src=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE
     )
+
+    message = (
+        "🔎 **LS-Insider – Rockstar Script-Diagnose**\n\n"
+        f"HTTP-Status: `{response.status_code}`\n"
+        f"Gefundene JavaScript-Dateien: `{len(scripts)}`\n\n"
+    )
+
+    for script in scripts[:10]:
+        message += f"• `{script}`\n"
 
     send_to_discord(message)
 
