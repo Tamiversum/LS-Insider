@@ -129,49 +129,42 @@ def format_period(start: date, end: date) -> str:
 
 
 class ArticleParser(HTMLParser):
-    """Extrahiert h1-h4, p und li als geordnete Inhaltsblöcke."""
-
+    """Robuster DOM-naher Parser für Überschriften, Absätze und Listen."""
     TRACKED_TAGS = {"h1", "h2", "h3", "h4", "p", "li"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.entries = []
-        self._tag_stack = []
-        self._active_tag = None
-        self._parts = []
+        self._tracked = []
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         if tag in self.TRACKED_TAGS:
-            self._finish()
-            self._active_tag = tag
-            self._parts = []
-        self._tag_stack.append(tag)
+            self._tracked.append([tag, []])
 
     def handle_endtag(self, tag):
         tag = tag.lower()
-        if self._active_tag == tag:
-            self._finish()
-        for index in range(len(self._tag_stack) - 1, -1, -1):
-            if self._tag_stack[index] == tag:
-                del self._tag_stack[index:]
+        for i in range(len(self._tracked) - 1, -1, -1):
+            if self._tracked[i][0] == tag:
+                tracked_tag, parts = self._tracked.pop(i)
+                text = clean_line(" ".join(parts))
+                if text:
+                    self.entries.append({"tag": tracked_tag, "text": text})
                 break
 
     def handle_data(self, data):
-        if self._active_tag:
-            self._parts.append(data)
-
-    def _finish(self):
-        if not self._active_tag:
+        text = clean_line(data)
+        if not text:
             return
-        text = clean_line(" ".join(self._parts))
-        if text:
-            self.entries.append({"tag": self._active_tag, "text": text})
-        self._active_tag = None
-        self._parts = []
+        for item in self._tracked:
+            item[1].append(text)
 
     def close(self):
-        self._finish()
+        while self._tracked:
+            tag, parts = self._tracked.pop()
+            text = clean_line(" ".join(parts))
+            if text:
+                self.entries.append({"tag": tag, "text": text})
         super().close()
 
 
@@ -182,31 +175,43 @@ def parse_html_entries(page_html: str):
     return parser.entries
 
 
+IGTA_SECTION_NAMES = {
+    "bonuses and rewards", "bonuses & rewards", "bonuses",
+    "free penaud la coureuse and hsw upgrade", "free penaud la coureuse",
+    "discounts", "discounts and sales", "discounts & sales",
+    "vehicles", "vehicle", "challenges", "challenge",
+}
+
+
 def entries_to_sections(entries):
-    """
-    Baut echte Hauptsektionen.
-    h2 startet eine Hauptsektion.
-    h3/h4 bleiben darin und werden von den Extraktoren als Unterüberschriften genutzt.
-    """
+    """Erkennt die iGTA-Hauptsektionen robust, unabhängig von h1/h2-Markup."""
     sections = {}
     current = None
+    article_title = normalize_heading(extract_article_title(entries)) if entries else ""
 
     for entry in entries:
-        tag = entry["tag"]
-        text = clean_line(entry["text"])
+        tag = entry.get("tag", "")
+        text = clean_line(entry.get("text", ""))
         if not text:
             continue
 
-        if tag == "h2":
-            current = text
+        normalized = normalize_heading(text.rstrip(":"))
+        if normalized == article_title:
+            continue
+
+        if normalized in IGTA_SECTION_NAMES:
+            current = text.rstrip(":")
             sections.setdefault(current, [])
             continue
 
+        # Manche iGTA-Versionen liefern Hauptüberschriften als h1/h2, aber
+        # die tatsächlichen Überschriftentexte sind trotzdem eindeutig.
+        # Unbekannte h1/h2 ignorieren wir, damit Navigation nicht als Artikel
+        # gewertet wird. h3/h4 bleiben immer im aktuellen Bereich.
         if current is not None:
             sections[current].append({"tag": tag, "text": text})
 
     return sections
-
 
 def normalize_heading(value: str) -> str:
     value = clean_line(value).casefold()
@@ -651,7 +656,6 @@ def make_wednesday_post(article_html: str, source_url: str):
     lines = [
         "🗞️ **LS-INSIDER**",
         "",
-        "📰 **WOCHENSCHWERPUNKT**",
         f"**{headline}**",
         f"📅 **{format_period(start, end)}**",
         build_german_intro(),
