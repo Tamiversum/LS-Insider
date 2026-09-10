@@ -11,7 +11,7 @@ from playwright.async_api import async_playwright
 
 
 # ============================================================
-# LS-INSIDER
+# EINSTELLUNGEN
 # ============================================================
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
@@ -30,23 +30,17 @@ STATE_FILE = "weekly_state.json"
 
 VIENNA = ZoneInfo("Europe/Vienna")
 
+# Discord erlaubt maximal 2000 Zeichen.
+# Etwas Reserve lassen.
 DISCORD_LIMIT = 1900
 
-# ============================================================
-# TESTMODUS
-# ============================================================
-
-# TRUE:
-#   Mittwoch UND Donnerstag werden getestet.
-#
-# FALSE:
-#   Normaler Wochentag entscheidet automatisch.
-#
+# WICHTIG:
+# Für die momentanen Tests auf True lassen.
 TEST_MODE = True
 
 
 # ============================================================
-# HILFSFUNKTIONEN
+# ALLGEMEINE HILFSFUNKTIONEN
 # ============================================================
 
 def clean_text(text):
@@ -54,36 +48,52 @@ def clean_text(text):
         return ""
 
     text = text.replace("\xa0", " ")
-    text = text.replace("\r", "\n")
-
     text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n[ \t]+", "\n", text)
-    text = re.sub(r"\n+", "\n", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+
+    return text.strip()
+
+
+def clean_single_line(text):
+    if not text:
+        return ""
+
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
 def unique_items(items):
     result = []
+    seen = set()
 
     for item in items:
-        item = clean_text(item)
+        item = clean_single_line(item)
 
-        if item and item not in result:
-            result.append(item)
+        if not item:
+            continue
+
+        key = item.lower()
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        result.append(item)
 
     return result
 
 
-def make_signature(data):
-    raw = json.dumps(
-        data,
-        sort_keys=True,
-        ensure_ascii=False
+def make_signature(*parts):
+    content = "||".join(
+        clean_single_line(str(part))
+        for part in parts
+        if part is not None
     )
 
     return hashlib.sha256(
-        raw.encode("utf-8")
+        content.encode("utf-8")
     ).hexdigest()
 
 
@@ -117,6 +127,19 @@ def save_state(state):
         )
 
 
+def contains_any(text, words):
+    text = text.lower()
+
+    return any(
+        word.lower() in text
+        for word in words
+    )
+
+
+# ============================================================
+# DISCORD
+# ============================================================
+
 def send_discord(message):
     if not message:
         return
@@ -124,7 +147,6 @@ def send_discord(message):
     chunks = []
 
     while len(message) > DISCORD_LIMIT:
-
         split_at = message.rfind(
             "\n",
             0,
@@ -138,15 +160,12 @@ def send_discord(message):
             message[:split_at]
         )
 
-        message = message[
-            split_at:
-        ].lstrip()
+        message = message[split_at:].lstrip()
 
     if message:
         chunks.append(message)
 
     for chunk in chunks:
-
         response = requests.post(
             WEBHOOK_URL,
             json={
@@ -155,808 +174,648 @@ def send_discord(message):
             timeout=30
         )
 
-        if response.status_code not in (200, 204):
-            raise RuntimeError(
-                "Discord-Webhook-Fehler: "
-                f"{response.status_code} "
-                f"{response.text}"
-            )
-
-
-def contains_any(text, keywords):
-    lower = text.lower()
-
-    return any(
-        keyword.lower() in lower
-        for keyword in keywords
-    )
+        response.raise_for_status()
 
 
 # ============================================================
-# DEUTSCHE ÜBERSETZUNG
+# ÜBERSETZUNGEN
 # ============================================================
 
 MONTHS = {
-    "January": "Januar",
-    "February": "Februar",
-    "March": "März",
-    "April": "April",
-    "May": "Mai",
-    "June": "Juni",
-    "July": "Juli",
-    "August": "August",
-    "September": "September",
-    "October": "Oktober",
-    "November": "November",
-    "December": "Dezember"
+    "january": "Januar",
+    "february": "Februar",
+    "march": "März",
+    "april": "April",
+    "may": "Mai",
+    "june": "Juni",
+    "july": "Juli",
+    "august": "August",
+    "september": "September",
+    "october": "Oktober",
+    "november": "November",
+    "december": "Dezember",
 }
 
 
 def translate_dates(text):
     if not text:
-        return ""
-
-    result = text
+        return text
 
     for english, german in MONTHS.items():
-        result = re.sub(
+        text = re.sub(
             rf"\b{english}\b",
             german,
-            result,
+            text,
             flags=re.IGNORECASE
         )
 
-    return result
+    return text
+
+
+def format_period(text):
+    """
+    Beispiele:
+
+    September 10-16
+    ->
+    10. – 16. September 2026
+
+    September 10, 2026
+    ->
+    10. September 2026
+    """
+
+    if not text:
+        return ""
+
+    value = clean_single_line(text)
+
+    current_year = datetime.now(
+        VIENNA
+    ).year
+
+    # --------------------------------------------------------
+    # September 10-16
+    # September 10 - 16
+    # --------------------------------------------------------
+
+    match = re.search(
+        r"\b"
+        r"(January|February|March|April|May|June|July|August|"
+        r"September|October|November|December)"
+        r"\s+"
+        r"(\d{1,2})"
+        r"\s*[-–]\s*"
+        r"(\d{1,2})"
+        r"(?:,\s*(\d{4}))?"
+        r"\b",
+        value,
+        flags=re.IGNORECASE
+    )
+
+    if match:
+        month = MONTHS[
+            match.group(1).lower()
+        ]
+
+        day_start = int(
+            match.group(2)
+        )
+
+        day_end = int(
+            match.group(3)
+        )
+
+        year = (
+            int(match.group(4))
+            if match.group(4)
+            else current_year
+        )
+
+        return (
+            f"{day_start}. – "
+            f"{day_end}. "
+            f"{month} "
+            f"{year}"
+        )
+
+    # --------------------------------------------------------
+    # September 10, 2026
+    # --------------------------------------------------------
+
+    match = re.search(
+        r"\b"
+        r"(January|February|March|April|May|June|July|August|"
+        r"September|October|November|December)"
+        r"\s+"
+        r"(\d{1,2})"
+        r",\s*"
+        r"(\d{4})"
+        r"\b",
+        value,
+        flags=re.IGNORECASE
+    )
+
+    if match:
+        month = MONTHS[
+            match.group(1).lower()
+        ]
+
+        day = int(
+            match.group(2)
+        )
+
+        year = int(
+            match.group(3)
+        )
+
+        return (
+            f"{day}. "
+            f"{month} "
+            f"{year}"
+        )
+
+    return translate_dates(value)
 
 
 def translate_text(text):
     if not text:
         return ""
 
-    result = clean_text(text)
-
-    # --------------------------------------------------------
-    # KONKRETE ROCKSTAR-TITEL
-    # --------------------------------------------------------
+    value = clean_single_line(text)
 
     exact_translations = {
+        (
+            "Compete Across Entrepreneurial Endeavors "
+            "in the GTA Online Business Rivalries Event"
+        ):
+            "Messt euch im Event „Business Rivalries“ "
+            "bei unternehmerischen Herausforderungen",
 
-        "Compete Across Entrepreneurial Endeavors in the GTA Online Business Rivalries Event":
-            "Messt euch im Event „Business Rivalries“ mit der Konkurrenz eurer zahlreichen Unternehmen in GTA Online",
+        (
+            "GTA Online 3. September 2026 "
+            "Messt euch im Event „Business Rivalries“ "
+            "bei unternehmerischen Herausforderungen"
+        ):
+            "GTA Online – 3. September 2026: "
+            "Messt euch im Event „Business Rivalries“ "
+            "bei unternehmerischen Herausforderungen",
 
-        "GTA Online 3. September 2026 Messt euch im Event „Business Rivalries“ mit der Konkurrenz eurer zahlreichen Unternehmen in GTA Online":
-            "GTA Online – 3. September 2026: Messt euch im Event „Business Rivalries“ mit der Konkurrenz eurer zahlreichen Unternehmen in GTA Online",
+        (
+            "GTA Online 10. September 2026 "
+            "GTA+ Members Enjoy One Week of Early Access "
+            "to the New Pegassi Horus Supercar"
+        ):
+            "GTA Online – 10. September 2026: "
+            "GTA+-Mitglieder erhalten eine Woche Vorabzugang "
+            "zum neuen Pegassi Horus",
 
-        "GTA Online 10. September 2026 GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar":
-            "GTA Online – 10. September 2026: GTA+-Mitglieder erhalten eine Woche Vorabzugang zum neuen Pegassi Horus",
-
-        "GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar":
-            "GTA+-Mitglieder erhalten eine Woche Vorabzugang zum neuen Pegassi Horus"
+        (
+            "GTA+ Members Enjoy One Week of Early Access "
+            "to the New Pegassi Horus Supercar"
+        ):
+            "GTA+-Mitglieder erhalten eine Woche Vorabzugang "
+            "zum neuen Pegassi Horus",
     }
 
-    for english, german in exact_translations.items():
-
-        if english.lower() in result.lower():
-            result = re.sub(
-                re.escape(english),
-                german,
-                result,
-                flags=re.IGNORECASE
-            )
-
-    # --------------------------------------------------------
-    # TYPISCHE GTA-BEGRIFFE
-    # --------------------------------------------------------
+    if value in exact_translations:
+        return exact_translations[value]
 
     replacements = [
-
         (
             "GTA Online Weekly Update",
             "GTA Online Eventwoche"
         ),
-
         (
             "Weekly Update",
             "Eventwoche"
         ),
-
-        (
-            "Bonuses & Discounts",
-            "Boni & Rabatte"
-        ),
-
         (
             "Bonuses",
             "Boni"
         ),
-
+        (
+            "Bonus",
+            "Bonus"
+        ),
         (
             "Discounts",
             "Rabatte"
         ),
-
+        (
+            "Discount",
+            "Rabatt"
+        ),
         (
             "New Vehicle",
             "Neues Fahrzeug"
         ),
-
         (
             "New Vehicles",
             "Neue Fahrzeuge"
         ),
-
-        (
-            "New Supercar",
-            "Neuer Supersportwagen"
-        ),
-
         (
             "Supercar",
             "Supersportwagen"
         ),
-
-        (
-            "Sports Car",
-            "Sportwagen"
-        ),
-
         (
             "Motorcycle",
             "Motorrad"
         ),
-
-        (
-            "Motorcycles",
-            "Motorräder"
-        ),
-
         (
             "Vehicle",
             "Fahrzeug"
         ),
-
-        (
-            "Vehicles",
-            "Fahrzeuge"
-        ),
-
         (
             "Early Access",
             "Vorabzugang"
         ),
-
         (
             "Reward",
             "Belohnung"
         ),
-
         (
             "Rewards",
             "Belohnungen"
         ),
-
         (
-            "Free",
-            "Kostenlos"
+            "Weekly Challenge",
+            "Wöchentliche Herausforderung"
         ),
-
         (
             "FREE",
             "KOSTENLOS"
         ),
-
+        (
+            "Free",
+            "Kostenlos"
+        ),
         (
             "Gift",
             "Geschenk"
         ),
-
         (
             "Gifts",
             "Geschenke"
         ),
-
-        (
-            "Complete at least one Weekly Challenge",
-            "Schließt mindestens eine Weekly Challenge ab"
-        ),
-
-        (
-            "over the next two weeks",
-            "in den nächsten zwei Wochen"
-        ),
-
-        (
-            "to claim",
-            "um euch zu sichern"
-        ),
-
-        (
-            "complimentary",
-            "kostenlos"
-        ),
-
-        (
-            "when you play GTA Online",
-            "wenn ihr GTA Online spielt"
-        ),
-
-        (
-            "between",
-            "zwischen"
-        ),
-
-        (
-            "September 24-30",
-            "24.–30. September"
-        ),
-
-        (
-            "September 10-16",
-            "10.–16. September"
-        ),
-
-        (
-            "September 3-9",
-            "3.–9. September"
-        ),
-
-        (
-            "Earn",
-            "Verdient"
-        ),
-
-        (
-            "selling all kinds of product",
-            "durch den Verkauf aller Arten von Waren"
-        ),
-
-        (
-            "to bank an extra",
-            "um zusätzlich"
-        ),
-
-        (
-            "plus the",
-            "sowie den"
-        ),
-
-        (
-            "and",
-            "und"
-        )
     ]
 
-    # Lange Begriffe zuerst
-    replacements.sort(
-        key=lambda item: len(item[0]),
-        reverse=True
-    )
-
     for english, german in replacements:
-
-        result = re.sub(
+        value = re.sub(
             re.escape(english),
             german,
-            result,
+            value,
             flags=re.IGNORECASE
         )
 
-    result = translate_dates(result)
+    value = translate_dates(value)
 
-    # --------------------------------------------------------
-    # NACHSORTIERUNG
-    # --------------------------------------------------------
-
-    result = re.sub(
-        r"\b(\d{1,2})-(\d{1,2})\.\s*September\b",
-        r"\1.–\2. September",
-        result
-    )
-
-    result = result.replace(
-        "Schließt mindestens eine Weekly Challenge ab in den nächsten zwei Wochen",
-        "Schließt in den nächsten zwei Wochen mindestens eine Weekly Challenge ab"
-    )
-
-    result = result.replace(
-        "um euch zu sichern ein",
-        "um euch ein"
-    )
-
-    result = result.replace(
-        "und kostenlos",
-        "und kostenlos"
-    )
-
-    return clean_text(result)
+    return value
 
 
 # ============================================================
-# ZEITRAUM
+# GTABASE – WOCHENINFORMATIONEN
 # ============================================================
 
-def detect_period(text):
-
+def find_weekly_title(text):
     patterns = [
-
-        r"\b"
-        r"(January|February|March|April|May|June|July|August|"
-        r"September|October|November|December)"
-        r"\s+\d{1,2}"
-        r"\s*[-–]"
-        r"\s*"
-        r"(January|February|March|April|May|June|July|August|"
-        r"September|October|November|December)"
-        r"\s+\d{1,2}"
-        r"\b",
-
-        r"\b"
-        r"(January|February|March|April|May|June|July|August|"
-        r"September|October|November|December)"
-        r"\s+\d{1,2}"
-        r"\s*[-–]"
-        r"\s*\d{1,2}"
-        r"\b"
+        r"GTA Online Weekly Update.*",
+        r"GTA Online Eventwoche.*",
+        r"Weekly Update.*"
     ]
 
     for pattern in patterns:
-
         match = re.search(
             pattern,
             text,
-            re.IGNORECASE
+            flags=re.IGNORECASE
         )
 
         if match:
-
-            value = clean_text(
+            return clean_single_line(
                 match.group(0)
             )
 
-            value = translate_dates(
-                value
+    return (
+        "GTA Online Eventwoche – "
+        "Boni & Rabatte"
+    )
+
+
+def extract_bonus_items(text):
+    items = []
+
+    bonus_patterns = [
+        (
+            r"Community\s+(?:Mission\s+)?Series"
+            r".{0,80}?3\s*[xX]",
+            "Community Series – 3x GTA$ & RP"
+        ),
+        (
+            r"Biker\s+Clubhouse\s+Contracts"
+            r".{0,100}?2\s*[xX]",
+            "Biker-Clubhaus-Aufträge – 2x GTA$ & RP"
+        ),
+        (
+            r"Clubhouse\s+Contracts"
+            r".{0,100}?2\s*[xX]",
+            "Biker-Clubhaus-Aufträge – 2x GTA$ & RP"
+        ),
+        (
+            r"MC\s+Work"
+            r".{0,100}?2\s*[xX]",
+            "MC-Arbeiten – 2x GTA$ & RP"
+        ),
+        (
+            r"MC\s+Challenges"
+            r".{0,100}?2\s*[xX]",
+            "MC-Herausforderungen – 2x GTA$ & RP"
+        ),
+        (
+            r"Street\s+Dealer\s+Sales"
+            r".{0,100}?2\s*[xX]",
+            "Street-Dealer-Verkäufe – 2x GTA$"
+        ),
+        (
+            r"Bike\s+Service\s+Missions"
+            r".{0,100}?2\s*[xX]",
+            "Bike-Service-Missionen – 2x GTA$"
+        ),
+        (
+            r"Hasta\s+La\s+Vista"
+            r".{0,100}?2\s*[xX]",
+            "Hasta La Vista – 2x GTA$ & RP"
+        ),
+        (
+            r"Every\s+Bullet\s+Counts"
+            r".{0,100}?2\s*[xX]",
+            "Every Bullet Counts – 2x GTA$ & RP"
+        ),
+    ]
+
+    for pattern, result in bonus_patterns:
+        if re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        ):
+            items.append(result)
+
+    return unique_items(items)
+
+
+def extract_free_items(text):
+    items = []
+
+    # --------------------------------------------------------
+    # Grapeseed Clubhouse
+    # --------------------------------------------------------
+
+    if re.search(
+        r"Grapeseed\s+Clubhouse"
+        r".{0,150}?"
+        r"(?:FREE|free|KOSTENLOS)",
+        text,
+        flags=re.IGNORECASE
+    ):
+        items.append(
+            "Grapeseed Clubhouse – KOSTENLOS"
+        )
+
+    # --------------------------------------------------------
+    # Penaud La Coureuse
+    # --------------------------------------------------------
+
+    if re.search(
+        r"Penaud\s+La\s+Coureuse"
+        r".{0,250}?"
+        r"(?:FREE|free|KOSTENLOS)",
+        text,
+        flags=re.IGNORECASE
+    ):
+        items.append(
+            "Penaud La Coureuse – kostenlos "
+            "durch die wöchentliche Herausforderung"
+        )
+
+    # --------------------------------------------------------
+    # Allgemeine kostenlose Fahrzeuge/Gegenstände
+    # --------------------------------------------------------
+
+    patterns = [
+        (
+            r"([A-Z][A-Za-z0-9' -]{2,50})"
+            r".{0,80}?"
+            r"(?:FREE|free)",
+        )
+    ]
+
+    for pattern in patterns:
+        matches = re.findall(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
+
+        for match in matches[:10]:
+            value = clean_single_line(match)
+
+            if (
+                "GTA Online" not in value
+                and len(value) > 3
+                and len(value) < 80
+            ):
+                if value.lower() not in {
+                    "weekly challenge",
+                    "members",
+                    "access",
+                }:
+                    items.append(
+                        f"{value} – KOSTENLOS"
+                    )
+
+    return unique_items(items)
+
+
+def extract_vehicle_items(text):
+    items = []
+
+    vehicle_names = [
+        "S95",
+        "Nimbus",
+        "Vindicator",
+        "Baller ST",
+        "Cheetah Classic",
+        "Vivanite",
+        "Penumbra FF",
+        "Patriot Stretch",
+        "Shinobi",
+        "Vortex",
+        "Growler",
+        "Defiler",
+        "Aleutian",
+        "Warrener HKR",
+        "Rampant Rocket Tricycle",
+        "Rampant Rocket",
+    ]
+
+    for vehicle in vehicle_names:
+        if re.search(
+            rf"\b{re.escape(vehicle)}\b",
+            text,
+            flags=re.IGNORECASE
+        ):
+            items.append(vehicle)
+
+    return unique_items(items)
+
+
+def extract_discount_items(text):
+    items = []
+
+    discount_patterns = [
+        r"([A-Z][A-Za-z0-9' -]{2,50})"
+        r".{0,80}?"
+        r"[-–]?\s*\d{1,2}%\s*(?:OFF|discount)",
+
+        r"([A-Z][A-Za-z0-9' -]{2,50})"
+        r".{0,80}?"
+        r"\d{1,2}%\s*Rabatt",
+    ]
+
+    for pattern in discount_patterns:
+        matches = re.findall(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
+
+        for match in matches:
+            value = clean_single_line(match)
+
+            if (
+                3 <= len(value) <= 70
+                and value.lower()
+                not in {
+                    "gta online",
+                    "this week",
+                    "weekly update",
+                }
+            ):
+                items.append(value)
+
+    return unique_items(items)[:20]
+
+
+def extract_weekly_challenge(text):
+    patterns = [
+        r"Weekly Challenge.{0,300}",
+        r"wöchentliche Herausforderung.{0,300}",
+    ]
+
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
+
+        if match:
+            value = clean_single_line(
+                match.group(0)
             )
 
-            value = re.sub(
-                r"(\w+)\s+(\d{1,2})",
-                r"\2. \1",
-                value,
-                count=0
-            )
+            value = translate_text(value)
 
             return value
+
+    # Aktueller allgemeiner Fallback
+    if re.search(
+        r"selling all kinds of product",
+        text,
+        flags=re.IGNORECASE
+    ):
+        return (
+            "Verdiene GTA$1.000.000 durch den Verkauf "
+            "aller Arten von Waren und erhalte zusätzlich "
+            "GTA$1.000.000 sowie den Junk Tracksuit."
+        )
 
     return ""
 
 
-# ============================================================
-# GTABASE – TITEL
-# ============================================================
-
-async def find_weekly_title(page):
-
-    elements = await page.locator(
-        "h1, h2, h3"
-    ).all()
-
-    candidates = []
-
-    for element in elements:
-
-        try:
-
-            text = clean_text(
-                await element.inner_text()
-            )
-
-            if text:
-                candidates.append(text)
-
-        except Exception:
-            pass
-
-    candidates = unique_items(
-        candidates
-    )
-
-    keywords = [
-        "weekly update",
-        "weekly bonuses",
-        "bonuses & discounts",
-        "bonuses",
-        "discounts"
-    ]
-
-    for candidate in candidates:
-
-        lower = candidate.lower()
-
-        if any(
-            keyword in lower
-            for keyword in keywords
-        ):
-
-            return translate_text(
-                candidate
-            )
-
-    if candidates:
-
-        return translate_text(
-            candidates[0]
-        )
-
-    return "GTA Online Eventwoche"
-
-
-# ============================================================
-# BONI
-# ============================================================
-
-def extract_bonus_items(text):
-
-    results = []
-
-    patterns = [
-
-        (
-            r"Community Series Jobs\s+3x",
-            "Community Series Jobs – 3x GTA$ & RP"
-        ),
-
-        (
-            r"Clubhouse Contracts\s+2x",
-            "Clubhouse Contracts – 2x GTA$ & RP"
-        ),
-
-        (
-            r"MC Work\s+2x",
-            "MC-Arbeiten – 2x GTA$ & RP"
-        ),
-
-        (
-            r"MC Challenges\s+2x",
-            "MC-Herausforderungen – 2x GTA$ & RP"
-        ),
-
-        (
-            r"Hasta La Vista\s+2x",
-            "Hasta La Vista – 2x GTA$ & RP"
-        ),
-
-        (
-            r"Every Bullet Counts\s+2x",
-            "Every Bullet Counts – 2x GTA$ & RP"
-        ),
-
-        (
-            r"Street Dealer Sales\s+2x",
-            "Verkäufe bei Street Dealers – 2x GTA$"
-        ),
-
-        (
-            r"Bike Service Missions\s+2x",
-            "Bike-Service-Missionen – 2x GTA$"
-        )
-    ]
-
-    for pattern, replacement in patterns:
-
-        if re.search(
-            pattern,
-            text,
-            re.IGNORECASE
-        ):
-
-            results.append(
-                replacement
-            )
-
-    return unique_items(
-        results
-    )
-
-
-# ============================================================
-# KOSTENLOSE SACHEN
-# ============================================================
-
-def extract_free_items(text):
-
-    results = []
-
-    if re.search(
-        r"Grapeseed Clubhouse.*?FREE",
-        text,
-        re.IGNORECASE
-    ):
-
-        results.append(
-            "Grapeseed Clubhouse – KOSTENLOS"
-        )
-
-    match = re.search(
-        r"Complete at least one Weekly Challenge.*?"
-        r"free Penaud La Coureuse.*?"
-        r"September 24.?30",
-        text,
-        re.IGNORECASE
-    )
-
-    if match:
-
-        results.append(
-            "Mindestens eine Weekly Challenge "
-            "abschließen, um die Penaud La Coureuse "
-            "und ein kostenloses HSW-Upgrade zu erhalten "
-            "(24.–30. September)."
-        )
-
-    return unique_items(
-        results
-    )
-
-
-# ============================================================
-# RABATTE
-# ============================================================
-
-def extract_discount_items(text):
-
-    results = []
-
-    pattern = re.compile(
-        r"([A-Z][A-Za-z0-9'&.\-]*(?:\s+[A-Z][A-Za-z0-9'&.\-]*){0,5})"
-        r"\s+"
-        r"(\$[\d,]+)"
-        r"\s+"
-        r"(-\d{1,2}%)"
-        r"\s+"
-        r"(\$[\d,]+)"
-    )
-
-    matches = pattern.findall(
-        text
-    )
-
-    blocked = [
-        "GTA 6",
-        "Vehicles Weapons",
-        "Map Locations",
-        "GTA Content",
-        "Weekly Update",
-        "This Week",
-        "Showrooms",
-        "Test Rides"
-    ]
-
-    for name, original, discount, sale in matches:
-
-        name = clean_text(
-            name
-        )
-
-        if any(
-            blocked_text.lower()
-            in name.lower()
-            for blocked_text in blocked
-        ):
-            continue
-
-        if name.lower() in {
-            "vehicles",
-            "vehicle",
-            "showrooms",
-            "test rides",
-            "discounts",
-            "in game discounts"
-        }:
-            continue
-
-        results.append(
-            f"{name} {original} "
-            f"{discount} {sale}"
-        )
-
-    return unique_items(
-        results
-    )
-
-
-# ============================================================
-# FAHRZEUGE
-# ============================================================
-
-def extract_vehicle_items(discounts):
-
-    vehicles = []
-
-    for item in discounts:
-
-        match = re.match(
-            r"^(.*?)\s+\$[\d,]+\s+-\d{1,2}%\s+\$[\d,]+$",
-            item
-        )
-
-        if not match:
-            continue
-
-        name = clean_text(
-            match.group(1)
-        )
-
-        if name:
-            vehicles.append(
-                name
-            )
-
-    return unique_items(
-        vehicles
-    )
-
-
-# ============================================================
-# WEEKLY CHALLENGE
-# ============================================================
-
-def extract_weekly_challenge(text):
-
-    match = re.search(
-        r"Earn GTA\$1,000,000"
-        r"[^.]*?"
-        r"Junk Tracksuit",
-        text,
-        re.IGNORECASE
-    )
-
-    if not match:
-
-        match = re.search(
-            r"Earn GTA\$[\d,]+"
-            r"[^.]*?"
-            r"Junk Tracksuit",
-            text,
-            re.IGNORECASE
-        )
-
-    if not match:
-        return ""
-
-    return (
-        "Verdient GTA$1.000.000 durch den "
-        "Verkauf aller Arten von Waren und "
-        "erhaltet zusätzlich GTA$1.000.000 "
-        "sowie den Junk Tracksuit."
-    )
-
-
-# ============================================================
-# GTABASE ABRUFEN
-# ============================================================
-
 async def get_gtabase_data():
+    async with async_playwright() as playwright:
 
-    async with async_playwright() as p:
-
-        browser = await p.chromium.launch(
+        browser = await playwright.chromium.launch(
             headless=True
         )
 
-        page = await browser.new_page(
-            locale="en-US"
-        )
+        page = await browser.new_page()
 
         try:
-
-            print(
-                "🌐 Öffne GTABase..."
-            )
-
             await page.goto(
                 GTABASE_URL,
                 wait_until="domcontentloaded",
                 timeout=60000
             )
 
-            await page.wait_for_timeout(
-                5000
+            await page.wait_for_timeout(5000)
+
+            raw_text = await page.locator(
+                "body"
+            ).inner_text()
+
+            text = clean_text(raw_text)
+
+            period_match = re.search(
+                r"(January|February|March|April|May|June|July|"
+                r"August|September|October|November|December)"
+                r"\s+\d{1,2}"
+                r"(?:\s*[-–]\s*\d{1,2})?"
+                r"(?:,\s*\d{4})?",
+                text,
+                flags=re.IGNORECASE
             )
 
-            print(
-                f"✅ GTABase geladen: "
-                f"{page.url}"
-            )
+            period = ""
 
-            title = await find_weekly_title(
-                page
-            )
+            if period_match:
+                period = format_period(
+                    period_match.group(0)
+                )
 
-            body_text = clean_text(
-                await page.locator(
-                    "body"
-                ).inner_text()
-            )
-
-            period = detect_period(
-                body_text
+            title = translate_text(
+                find_weekly_title(text)
             )
 
             bonuses = extract_bonus_items(
-                body_text
+                text
             )
 
             free_items = extract_free_items(
-                body_text
-            )
-
-            discounts = extract_discount_items(
-                body_text
+                text
             )
 
             vehicles = extract_vehicle_items(
-                discounts
+                text
             )
 
-            challenge = extract_weekly_challenge(
-                body_text
+            discounts = extract_discount_items(
+                text
             )
 
-            print("")
-            print(
-                "🔎 GTABASE-DATEN"
-            )
-            print(
-                f"📰 Titel: {title}"
-            )
-            print(
-                f"📅 Zeitraum: {period}"
-            )
-            print(
-                f"💰 Boni: {len(bonuses)}"
-            )
-            print(
-                f"🎁 Kostenlos: {len(free_items)}"
-            )
-            print(
-                f"🚗 Fahrzeuge: {len(vehicles)}"
-            )
-            print(
-                f"🏷️ Rabatte: {len(discounts)}"
-            )
-            print(
-                "🏆 Challenge: "
-                + ("Ja" if challenge else "Nein")
+            weekly_challenge = (
+                extract_weekly_challenge(text)
             )
 
             return {
-                "title": title,
                 "period": period,
+                "title": title,
                 "bonuses": bonuses,
                 "free_items": free_items,
                 "vehicles": vehicles,
                 "discounts": discounts,
-                "weekly_challenge": challenge
+                "weekly_challenge": weekly_challenge,
             }
 
         finally:
-
             await browser.close()
 
 
 # ============================================================
-# MITTWOCH – DIESE WOCHE IN LOS SANTOS
+# MITTWOCH – DIE WOCHENZEITUNG
 # ============================================================
 
 def build_wednesday_message(data):
+    period = data.get(
+        "period",
+        ""
+    )
 
     title = data.get(
         "title",
-        "GTA Online Eventwoche"
-    )
-
-    period = data.get(
-        "period",
-        "Unbekannt"
+        "GTA Online Eventwoche – Boni & Rabatte"
     )
 
     bonuses = data.get(
@@ -979,268 +838,194 @@ def build_wednesday_message(data):
         []
     )
 
-    challenge = data.get(
+    weekly_challenge = data.get(
         "weekly_challenge",
         ""
     )
 
-    lines = []
+    sections = []
 
-    lines.append(
-        "🗞️ **LS-INSIDER**"
-    )
+    # --------------------------------------------------------
+    # Kopf
+    # --------------------------------------------------------
 
-    lines.append("")
-
-    lines.append(
-        "# **DIESE WOCHE IN LOS SANTOS**"
-    )
-
-    lines.append("")
-
-    lines.append(
+    sections.append(
+        "🗞️ **LS-INSIDER**\n\n"
+        "# **DIESE WOCHE IN LOS SANTOS**\n\n"
         f"**{period}**"
     )
 
-    lines.append("")
-
+    # --------------------------------------------------------
     # EVENT
-    lines.append(
-        "📰 **EVENT**"
+    # --------------------------------------------------------
+
+    sections.append(
+        "📰 **EVENT**\n"
+        f"{title}"
     )
 
-    lines.append(
-        title
-    )
-
-    lines.append("")
-
+    # --------------------------------------------------------
     # BONI
+    # --------------------------------------------------------
+
     if bonuses:
-
-        lines.append(
-            "💰 **BONI**"
+        bonus_text = "\n".join(
+            f"• {item}"
+            for item in bonuses
         )
 
-        for item in bonuses:
+        sections.append(
+            "💰 **BONI**\n"
+            f"{bonus_text}"
+        )
 
-            lines.append(
-                f"• {item}"
-            )
-
-        lines.append("")
-
+    # --------------------------------------------------------
     # GESCHENKE
+    # --------------------------------------------------------
+
     if free_items:
-
-        lines.append(
-            "🎁 **GESCHENKE FÜR DIE COMMUNITY**"
+        free_text = "\n".join(
+            f"• {item}"
+            for item in free_items
         )
 
-        for item in free_items:
+        sections.append(
+            "🎁 **GESCHENKE FÜR DIE COMMUNITY**\n"
+            f"{free_text}"
+        )
 
-            lines.append(
-                f"• {item}"
-            )
-
-        lines.append("")
-
+    # --------------------------------------------------------
     # FAHRZEUGE
+    # --------------------------------------------------------
+
     if vehicles:
-
-        lines.append(
-            "🚗 **NEU AUF DEN STRASSEN**"
+        vehicle_text = "\n".join(
+            f"• {item}"
+            for item in vehicles
         )
 
-        for item in vehicles:
+        sections.append(
+            "🚗 **NEU AUF DEN STRASSEN**\n"
+            f"{vehicle_text}"
+        )
 
-            lines.append(
-                f"• {item}"
-            )
-
-        lines.append("")
-
+    # --------------------------------------------------------
     # RABATTE
+    # --------------------------------------------------------
+
     if discounts:
-
-        lines.append(
-            "🏷️ **SONDERANGEBOTE**"
+        discount_text = "\n".join(
+            f"• {item}"
+            for item in discounts
         )
 
-        for item in discounts:
+        sections.append(
+            "🏷️ **SONDERANGEBOTE**\n"
+            f"{discount_text}"
+        )
 
-            lines.append(
-                f"• {item}"
-            )
-
-        lines.append("")
-
+    # --------------------------------------------------------
     # WEEKLY CHALLENGE
-    if challenge:
+    # --------------------------------------------------------
 
-        lines.append(
-            "🏆 **WEEKLY CHALLENGE**"
+    if weekly_challenge:
+        sections.append(
+            "🏆 **WEEKLY CHALLENGE**\n"
+            f"• {weekly_challenge}"
         )
 
-        lines.append(
-            f"• {challenge}"
-        )
-
-        lines.append("")
-
+    # --------------------------------------------------------
     # AKTUELLE WOCHE
-    lines.append(
-        "📅 **AKTUELLE WOCHE**"
-    )
+    # --------------------------------------------------------
 
-    lines.append(
-        f"• {period}"
-    )
+    if period:
+        sections.append(
+            "📅 **AKTUELLE WOCHE**\n"
+            f"• {period}"
+        )
 
-    lines.append("")
-
+    # --------------------------------------------------------
     # LINK
-    lines.append(
-        "🔗 **VOLLSTÄNDIGER LINK**"
-    )
+    # --------------------------------------------------------
 
-    lines.append(
+    sections.append(
+        "🔗 **VOLLSTÄNDIGER LINK**\n"
         f"<{GTABASE_URL}>"
     )
 
-    return "\n".join(lines)
-
-
-# ============================================================
-# MITTWOCH NORMALBETRIEB
-# ============================================================
-
-def run_wednesday(gtabase_data):
-
-    state = load_state()
-
-    period = gtabase_data.get(
-        "period",
-        ""
-    )
-
-    if not period:
-
-        raise RuntimeError(
-            "GTABase konnte keinen Zeitraum "
-            "erkennen."
-        )
-
-    signature = make_signature(
-        gtabase_data
-    )
-
-    previous_signature = state.get(
-        "wednesday_signature"
-    )
-
-    if previous_signature == signature:
-
-        print("")
-        print(
-            "ℹ️ Diese Eventwoche wurde "
-            "bereits gepostet."
-        )
-
-        return
-
-    message = build_wednesday_message(
-        gtabase_data
-    )
-
-    print("")
-    print(
-        "📤 Sende Mittwoch-Ausgabe..."
-    )
-
-    send_discord(
-        message
-    )
-
-    state["week_period"] = period
-    state["wednesday_signature"] = signature
-    state["wednesday_data"] = gtabase_data
-
-    save_state(
-        state
-    )
-
-    print("")
-    print(
-        "✅ Mittwoch-Ausgabe wurde gepostet."
+    return "\n\n".join(
+        sections
     )
 
 
 # ============================================================
-# ROCKSTAR – DATUM ERKENNEN
+# ROCKSTAR NEWSWIRE
 # ============================================================
 
 def extract_date_from_text(text):
-
     if not text:
         return None
 
     patterns = [
-
         r"\b"
         r"(January|February|March|April|May|June|July|August|"
         r"September|October|November|December)"
         r"\s+"
         r"(\d{1,2})"
-        r",?\s+"
+        r",\s*"
         r"(\d{4})"
         r"\b",
 
         r"\b"
-        r"(\d{1,2})"
-        r"\s+"
+        r"(\d{1,2})\s+"
         r"(January|February|March|April|May|June|July|August|"
         r"September|October|November|December)"
         r"\s+"
         r"(\d{4})"
-        r"\b"
+        r"\b",
     ]
 
-    for index, pattern in enumerate(patterns):
+    for pattern in patterns:
 
         match = re.search(
             pattern,
             text,
-            re.IGNORECASE
+            flags=re.IGNORECASE
         )
 
         if not match:
             continue
 
         try:
-
-            if index == 0:
-
+            if match.group(1).isdigit():
+                day = int(match.group(1))
+                month = match.group(2)
+                year = int(match.group(3))
+            else:
                 month = match.group(1)
                 day = int(match.group(2))
                 year = int(match.group(3))
 
-            else:
-
-                day = int(match.group(1))
-                month = match.group(2)
-                year = int(match.group(3))
-
-            month_number = list(
-                MONTHS.keys()
-            ).index(
-                next(
-                    item
-                    for item in MONTHS
-                    if item.lower()
-                    == month.lower()
+            month_number = {
+                name.lower(): number
+                for number, name in enumerate(
+                    [
+                        "",
+                        "January",
+                        "February",
+                        "March",
+                        "April",
+                        "May",
+                        "June",
+                        "July",
+                        "August",
+                        "September",
+                        "October",
+                        "November",
+                        "December",
+                    ]
                 )
-            ) + 1
+            }[month.lower()]
 
             return datetime(
                 year,
@@ -1249,51 +1034,116 @@ def extract_date_from_text(text):
             )
 
         except Exception:
-            pass
+            continue
 
     return None
 
 
-# ============================================================
-# ROCKSTAR – GTA ONLINE MELDUNGEN FINDEN
-# ============================================================
+async def extract_article_content(page):
+    """
+    Holt bewusst NICHT mehr den kompletten <body>.
+    Dadurch werden Navigation, Footer, Cookie-Texte usw.
+    nicht mehr als Artikelinhalt ausgewertet.
+    """
 
-async def get_rockstar_news():
+    selectors = [
+        "article",
+        "main article",
+        '[data-testid="article"]',
+        "main",
+    ]
 
-    async with async_playwright() as p:
+    for selector in selectors:
 
-        browser = await p.chromium.launch(
-            headless=True
-        )
-
-        page = await browser.new_page(
-            locale="de-DE"
+        locator = page.locator(
+            selector
         )
 
         try:
+            count = await locator.count()
+        except Exception:
+            count = 0
 
-            print("")
-            print(
-                "🌐 Öffne Rockstar Newswire..."
+        for index in range(count):
+
+            container = locator.nth(index)
+
+            try:
+                elements = await container.locator(
+                    "h1, h2, h3, p"
+                ).all_inner_texts()
+
+                parts = []
+
+                for element in elements:
+                    value = clean_single_line(
+                        element
+                    )
+
+                    if not value:
+                        continue
+
+                    parts.append(value)
+
+                parts = unique_items(parts)
+
+                result = "\n".join(parts)
+
+                if len(result) >= 150:
+                    return result
+
+            except Exception:
+                continue
+
+    # --------------------------------------------------------
+    # Fallback:
+    # Nur Überschriften und Absätze der Seite,
+    # niemals mehr den kompletten Body.
+    # --------------------------------------------------------
+
+    try:
+        elements = await page.locator(
+            "h1, h2, h3, p"
+        ).all_inner_texts()
+
+        parts = []
+
+        for element in elements:
+            value = clean_single_line(
+                element
             )
 
+            if value:
+                parts.append(value)
+
+        return "\n".join(
+            unique_items(parts)
+        )
+
+    except Exception:
+        return ""
+
+
+async def get_rockstar_news():
+    async with async_playwright() as playwright:
+
+        browser = await playwright.chromium.launch(
+            headless=True
+        )
+
+        page = await browser.new_page()
+
+        try:
             await page.goto(
                 ROCKSTAR_URL,
                 wait_until="domcontentloaded",
                 timeout=60000
             )
 
-            await page.wait_for_timeout(
-                6000
-            )
-
-            print(
-                f"✅ Rockstar geladen: "
-                f"{page.url}"
-            )
+            await page.wait_for_timeout(5000)
 
             links = await page.locator(
-                "a[href]"
+                "a[href*='/newswire/']"
             ).all()
 
             candidates = []
@@ -1301,933 +1151,661 @@ async def get_rockstar_news():
             for link in links:
 
                 try:
-
                     href = await link.get_attribute(
                         "href"
                     )
 
-                    title = clean_text(
-                        await link.inner_text()
+                    title = await link.inner_text()
+
+                    title = clean_single_line(
+                        title
                     )
 
-                    if not href:
+                    if not href or not title:
                         continue
-
-                    if not title:
-                        continue
-
-                    if "/newswire/" not in href:
-                        continue
-
-                    combined = (
-                        title.lower()
-                        + " "
-                        + href.lower()
-                    )
-
-                    if "gta-online" not in combined:
-
-                        # GTA Online kann auch über
-                        # Business Rivalries etc.
-                        # erkennbar sein.
-                        gta_keywords = [
-                            "gta online",
-                            "business rivalries",
-                            "pegassi",
-                            "gta+",
-                            "los santos"
-                        ]
-
-                        if not any(
-                            keyword in combined
-                            for keyword in gta_keywords
-                        ):
-                            continue
 
                     if href.startswith("/"):
-
-                        full_url = (
+                        href = (
                             "https://www.rockstargames.com"
                             + href
                         )
 
-                    else:
-
-                        full_url = href
-
-                    # ------------------------------------------------
-                    # ELTERNBEREICH LESEN
-                    # ------------------------------------------------
-
-                    parent_text = ""
-
-                    try:
-
-                        parent_text = clean_text(
-                            await link.locator(
-                                "xpath=.."
-                            ).inner_text()
-                        )
-
-                    except Exception:
-                        pass
-
-                    combined_text = (
+                    combined = (
                         title
-                        + "\n"
-                        + parent_text
+                        + " "
+                        + href
+                    ).lower()
+
+                    # ------------------------------------------------
+                    # Nur relevante GTA-Online-Meldungen.
+                    # ------------------------------------------------
+
+                    relevant = contains_any(
+                        combined,
+                        [
+                            "gta online",
+                            "gta+",
+                            "pegassi",
+                            "business rivalries",
+                            "los santos",
+                            "gta-online",
+                        ]
                     )
 
-                    article_date = (
-                        extract_date_from_text(
-                            combined_text
-                        )
+                    if not relevant:
+                        continue
+
+                    # ------------------------------------------------
+                    # Datum aus Link/Umfeld suchen.
+                    # ------------------------------------------------
+
+                    date = extract_date_from_text(
+                        title
                     )
+
+                    if date is None:
+
+                        try:
+                            parent_text = clean_single_line(
+                                await link.locator(
+                                    "xpath=.."
+                                ).inner_text()
+                            )
+
+                            date = extract_date_from_text(
+                                parent_text
+                            )
+
+                        except Exception:
+                            date = None
 
                     candidates.append(
                         {
                             "title": title,
-                            "url": full_url,
-                            "date": (
-                                article_date.isoformat()
-                                if article_date
-                                else ""
-                            )
+                            "url": href,
+                            "date": date,
                         }
                     )
 
                 except Exception:
-                    pass
-
-            # --------------------------------------------------------
-            # DUPLIKATE ENTFERNEN
-            # --------------------------------------------------------
-
-            unique_candidates = []
-
-            seen_urls = set()
-
-            for candidate in candidates:
-
-                if candidate["url"] in seen_urls:
                     continue
 
-                seen_urls.add(
-                    candidate["url"]
-                )
-
-                unique_candidates.append(
-                    candidate
-                )
-
-            if not unique_candidates:
-
-                raise RuntimeError(
-                    "Keine passende GTA-Online-"
-                    "Meldung auf Rockstar gefunden."
-                )
+            if not candidates:
+                return None
 
             # --------------------------------------------------------
-            # DATUMSORTIERUNG
+            # Neueste Meldung zuerst.
             # --------------------------------------------------------
 
-            unique_candidates.sort(
+            candidates.sort(
                 key=lambda item: (
-                    item["date"] or "0000-00-00"
+                    item["date"]
+                    or datetime(
+                        1970,
+                        1,
+                        1
+                    )
                 ),
                 reverse=True
             )
 
-            latest = unique_candidates[0]
-
-            article_url = latest["url"]
-            original_title = latest["title"]
-
-            print("")
-            print(
-                "📰 Ausgewählte Rockstar-Meldung:"
-            )
-
-            print(
-                original_title
-            )
-
-            print(
-                f"📅 Datum: "
-                f"{latest['date'] or 'nicht erkannt'}"
-            )
-
-            print(
-                article_url
-            )
+            latest = candidates[0]
 
             # --------------------------------------------------------
-            # ARTIKEL ÖFFNEN
+            # Artikel öffnen
             # --------------------------------------------------------
 
-            article_page = await browser.new_page(
-                locale="de-DE"
-            )
+            article_page = await browser.new_page()
 
             try:
-
                 await article_page.goto(
-                    article_url,
+                    latest["url"],
                     wait_until="domcontentloaded",
                     timeout=60000
                 )
 
                 await article_page.wait_for_timeout(
-                    4000
+                    3000
                 )
 
-                article_body = clean_text(
-                    await article_page.locator(
-                        "body"
-                    ).inner_text()
+                article_text = (
+                    await extract_article_content(
+                        article_page
+                    )
                 )
 
             finally:
-
                 await article_page.close()
 
-            german_title = translate_text(
-                original_title
+            clean_title = clean_single_line(
+                latest["title"]
             )
 
-            german_body = translate_text(
-                article_body
+            clean_title = translate_text(
+                clean_title
             )
 
             return {
-                "title": german_title,
-                "original_title": original_title,
-                "url": article_url,
+                "title": clean_title,
+                "original_title": clean_single_line(
+                    latest["title"]
+                ),
+                "url": latest["url"],
                 "date": latest["date"],
-                "body": german_body
+                "body": clean_text(
+                    article_text
+                ),
             }
 
         finally:
-
             await browser.close()
-
-
-# ============================================================
-# DONNERSTAG – RELEVANTE INFORMATIONEN
-# ============================================================
-
-def extract_thursday_categories(
-    article,
-    previous_article
-):
-
-    title = article.get(
-        "title",
-        ""
-    )
-
-    body = article.get(
-        "body",
-        ""
-    )
-
-    url = article.get(
-        "url",
-        ""
-    )
-
-    previous_url = ""
-
-    if previous_article:
-
-        previous_url = previous_article.get(
-            "url",
-            ""
-        )
-
-    categories = []
-
-    # --------------------------------------------------------
-    # NEUE MELDUNG
-    # --------------------------------------------------------
-
-    if url != previous_url:
-
-        categories.append(
-            (
-                "🆕 **NEU**",
-                title
-            )
-        )
-
-    # --------------------------------------------------------
-    # ÄNDERUNG
-    # --------------------------------------------------------
-
-    elif previous_article:
-
-        old_signature = make_signature(
-            previous_article
-        )
-
-        new_signature = make_signature(
-            article
-        )
-
-        if old_signature != new_signature:
-
-            categories.append(
-                (
-                    "⚠️ **ÄNDERUNG**",
-                    "Die bestehende Meldung wurde "
-                    "von Rockstar aktualisiert."
-                )
-            )
-
-    # --------------------------------------------------------
-    # BONI
-    # --------------------------------------------------------
-
-    bonus_keywords = [
-        "2x",
-        "3x",
-        "4x",
-        "5x",
-        "bonus",
-        "bonuses",
-        "gta$ & rp",
-        "gta$ und rp",
-        "doppelte",
-        "dreifache"
-    ]
-
-    if contains_any(
-        title + " " + body,
-        bonus_keywords
-    ):
-
-        categories.append(
-            (
-                "💰 **NEUER BONUS**",
-                "Neue Bonusbelohnungen "
-                "wurden entdeckt."
-            )
-        )
-
-    # --------------------------------------------------------
-    # FAHRZEUGE
-    # --------------------------------------------------------
-
-    vehicle_keywords = [
-        "new vehicle",
-        "new car",
-        "new supercar",
-        "supercar",
-        "fahrzeug",
-        "supersportwagen",
-        "pegassi",
-        "bravado",
-        "grotti",
-        "benefactor",
-        "declasse",
-        "vapid",
-        "progen",
-        "truffade",
-        "lampadati"
-    ]
-
-    if contains_any(
-        title + " " + body,
-        vehicle_keywords
-    ):
-
-        categories.append(
-            (
-                "🚗 **NEUE FAHRZEUGMELDUNG**",
-                "Eine neue Fahrzeugmeldung "
-                "wurde entdeckt."
-            )
-        )
-
-    # --------------------------------------------------------
-    # BELOHNUNGEN
-    # --------------------------------------------------------
-
-    reward_keywords = [
-        "reward",
-        "rewards",
-        "free",
-        "gift",
-        "gifts",
-        "belohnung",
-        "belohnungen",
-        "geschenk",
-        "geschenke",
-        "claim",
-        "kostenlos"
-    ]
-
-    if contains_any(
-        title + " " + body,
-        reward_keywords
-    ):
-
-        categories.append(
-            (
-                "🎁 **NEUE BELOHNUNG**",
-                "Eine neue Belohnung oder "
-                "kostenlose Sache wurde entdeckt."
-            )
-        )
-
-    return unique_items(
-        [
-            f"{heading}\n{content}"
-            for heading, content in categories
-        ]
-    )
 
 
 # ============================================================
 # DONNERSTAG – GEHEIMBERICHT
 # ============================================================
 
-def build_thursday_message(
-    article,
-    category_lines
+def detect_thursday_categories(
+    news,
+    previous_state
 ):
-
-    title = article.get(
-        "title",
-        "Neue Rockstar-Meldung"
+    title = clean_single_line(
+        news.get("title", "")
     )
 
-    url = article.get(
+    body = clean_single_line(
+        news.get("body", "")
+    )
+
+    url = news.get(
         "url",
-        ROCKSTAR_URL
+        ""
     )
 
-    lines = []
+    combined = (
+        title
+        + " "
+        + body
+    ).lower()
 
-    lines.append(
-        "🕵️ **LS-INSIDER – GEHEIMBERICHT**"
+    categories = []
+
+    previous_url = previous_state.get(
+        "rockstar_url"
     )
 
-    lines.append("")
-
-    lines.append(
-        "🤫 *Psst... eine neue Meldung "
-        "ist eingetroffen.*"
+    previous_signature = previous_state.get(
+        "rockstar_signature"
     )
 
-    lines.append(
-        "Unsere Informanten haben etwas "
-        "Neues in Los Santos entdeckt."
+    current_signature = make_signature(
+        url,
+        title,
+        body
     )
 
-    lines.append("")
+    # --------------------------------------------------------
+    # NEU / ÄNDERUNG
+    # --------------------------------------------------------
 
-    # Kategorien
-    for item in category_lines:
-
-        lines.append(
-            item
+    if not previous_url:
+        categories.append(
+            "🆕 **NEU**\n"
+            "Eine neue Meldung ist eingetroffen."
         )
 
-        lines.append("")
+    elif previous_url != url:
+        categories.append(
+            "🆕 **NEU**\n"
+            "Eine neue Rockstar-Meldung wurde entdeckt."
+        )
 
-    lines.append(
-        "📡 **INFORMANTENBERICHT**"
+    elif previous_signature != current_signature:
+        categories.append(
+            "⚠️ **ÄNDERUNG**\n"
+            "Eine bestehende Meldung wurde aktualisiert."
+        )
+
+    # --------------------------------------------------------
+    # BONUS
+    #
+    # Bewusst nur echte Bonusbegriffe.
+    # Nicht mehr einfach jedes Auftauchen von "free",
+    # "GTA+" usw. als Bonus werten.
+    # --------------------------------------------------------
+
+    bonus_patterns = [
+        r"\b2x\b",
+        r"\b3x\b",
+        r"\b4x\b",
+        r"\b5x\b",
+        r"\b6x\b",
+        r"\bbonus\b",
+        r"\bbonuses\b",
+        r"\bdouble rewards\b",
+        r"\btriple rewards\b",
+        r"\bgta\$.*rp\b",
+    ]
+
+    if any(
+        re.search(
+            pattern,
+            combined,
+            flags=re.IGNORECASE
+        )
+        for pattern in bonus_patterns
+    ):
+        categories.append(
+            "💰 **NEUER BONUS**\n"
+            "In der Meldung wurden neue Boni entdeckt."
+        )
+
+    # --------------------------------------------------------
+    # FAHRZEUG
+    # --------------------------------------------------------
+
+    vehicle_patterns = [
+        r"\bnew vehicle\b",
+        r"\bnew car\b",
+        r"\bnew supercar\b",
+        r"\bsupercar\b",
+        r"\bvehicle\b",
+        r"\bpegassi\b",
+        r"\bhorus\b",
+        r"\bcar\b",
+        r"\bmotorcycle\b",
+    ]
+
+    if any(
+        re.search(
+            pattern,
+            combined,
+            flags=re.IGNORECASE
+        )
+        for pattern in vehicle_patterns
+    ):
+        categories.append(
+            "🚗 **NEUE FAHRZEUGMELDUNG**\n"
+            "Eine neue Fahrzeugmeldung wurde entdeckt."
+        )
+
+    # --------------------------------------------------------
+    # BELOHNUNG
+    #
+    # "free" allein reicht NICHT.
+    # --------------------------------------------------------
+
+    reward_patterns = [
+        r"\breward\b",
+        r"\brewards\b",
+        r"\bgift\b",
+        r"\bgifts\b",
+        r"\bfree vehicle\b",
+        r"\bfree car\b",
+        r"\bfree item\b",
+        r"\bfree outfit\b",
+        r"\bcomplimentary\b",
+    ]
+
+    if any(
+        re.search(
+            pattern,
+            combined,
+            flags=re.IGNORECASE
+        )
+        for pattern in reward_patterns
+    ):
+        categories.append(
+            "🎁 **NEUE BELOHNUNG**\n"
+            "Eine neue Belohnung wurde entdeckt."
+        )
+
+    # --------------------------------------------------------
+    # Doppelte Kategorien vermeiden
+    # --------------------------------------------------------
+
+    result = []
+    seen = set()
+
+    for category in categories:
+
+        key = category.split(
+            "\n",
+            1
+        )[0]
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        result.append(category)
+
+    return result, current_signature
+
+
+def build_thursday_message(
+    news,
+    categories
+):
+    title = clean_single_line(
+        news.get("title", "")
     )
 
-    lines.append(
+    url = news.get(
+        "url",
+        ""
+    )
+
+    category_text = "\n\n".join(
+        categories
+    )
+
+    sections = [
+        "🕵️ **LS-INSIDER – GEHEIMBERICHT**",
+        (
+            "🤫 *Psst... eine neue Meldung ist eingetroffen.*\n"
+            "Unsere Informanten haben etwas Neues in Los Santos entdeckt."
+        ),
+    ]
+
+    if category_text:
+        sections.append(
+            category_text
+        )
+
+    sections.append(
+        "📡 **INFORMANTENBERICHT**\n"
         f"**{title}**"
     )
 
-    lines.append("")
-
-    lines.append(
+    sections.append(
         "💬 *„Wir behalten Los Santos im Auge. "
         "Sobald sich etwas bewegt, wissen wir es.“*"
     )
 
-    lines.append("")
-
-    lines.append(
-        "🔗 **ORIGINALMELDUNG ÖFFNEN**"
-    )
-
-    lines.append(
+    sections.append(
+        "🔗 **ORIGINALMELDUNG ÖFFNEN**\n"
         f"<{url}>"
     )
 
-    return "\n".join(lines)
-
-
-# ============================================================
-# DONNERSTAG NORMALBETRIEB
-# ============================================================
-
-async def run_thursday():
-
-    state = load_state()
-
-    article = await get_rockstar_news()
-
-    previous_article = state.get(
-        "thursday_article"
-    )
-
-    category_pairs = []
-
-    # NEU / ÄNDERUNG
-    title = article.get(
-        "title",
-        ""
-    )
-
-    url = article.get(
-        "url",
-        ""
-    )
-
-    previous_url = ""
-
-    if previous_article:
-        previous_url = previous_article.get(
-            "url",
-            ""
-        )
-
-    if url != previous_url:
-
-        category_pairs.append(
-            (
-                "🆕 **NEU**",
-                title
-            )
-        )
-
-    elif previous_article:
-
-        if make_signature(article) != make_signature(
-            previous_article
-        ):
-
-            category_pairs.append(
-                (
-                    "⚠️ **ÄNDERUNG**",
-                    "Die bestehende Meldung wurde "
-                    "aktualisiert."
-                )
-            )
-
-    # Bonus
-    if contains_any(
-        article.get("body", ""),
-        [
-            "2x",
-            "3x",
-            "4x",
-            "5x",
-            "bonus",
-            "bonuses"
-        ]
-    ):
-
-        category_pairs.append(
-            (
-                "💰 **NEUER BONUS**",
-                "Neue Bonusbelohnungen wurden entdeckt."
-            )
-        )
-
-    # Fahrzeuge
-    if contains_any(
-        title + " " + article.get("body", ""),
-        [
-            "new vehicle",
-            "new car",
-            "new supercar",
-            "supercar",
-            "vehicle",
-            "fahrzeug",
-            "pegassi",
-            "bravado",
-            "grotti"
-        ]
-    ):
-
-        category_pairs.append(
-            (
-                "🚗 **NEUE FAHRZEUGMELDUNG**",
-                "Eine neue Fahrzeugmeldung wurde entdeckt."
-            )
-        )
-
-    # Belohnungen
-    if contains_any(
-        title + " " + article.get("body", ""),
-        [
-            "free",
-            "reward",
-            "gift",
-            "belohnung",
-            "geschenk",
-            "kostenlos"
-        ]
-    ):
-
-        category_pairs.append(
-            (
-                "🎁 **NEUE BELOHNUNG**",
-                "Eine neue Belohnung oder kostenlose "
-                "Sache wurde entdeckt."
-            )
-        )
-
-    if not category_pairs:
-
-        print("")
-        print(
-            "ℹ️ Keine neue oder geänderte "
-            "Information."
-        )
-
-        return
-
-    category_lines = []
-
-    for heading, content in category_pairs:
-
-        category_lines.append(
-            f"{heading}\n{content}"
-        )
-
-    message = build_thursday_message(
-        article,
-        category_lines
-    )
-
-    print("")
-    print(
-        "📤 Sende Donnerstag-Geheimbericht..."
-    )
-
-    send_discord(
-        message
-    )
-
-    state["thursday_article"] = article
-    state["thursday_signature"] = make_signature(
-        article
-    )
-
-    save_state(
-        state
-    )
-
-    print("")
-    print(
-        "✅ Donnerstag-Geheimbericht "
-        "wurde gepostet."
+    return "\n\n".join(
+        sections
     )
 
 
 # ============================================================
-# TESTMODUS
+# HAUPTLOGIK
 # ============================================================
 
 async def run_test():
-
-    print("")
-    print("=" * 70)
-    print("🧪 LS-INSIDER TESTMODUS")
-    print("=" * 70)
-
-    print("")
     print(
-        "Es werden beide finalen Designs gesendet."
+        "========================================"
     )
-
     print(
-        "Der Veröffentlichungsstatus wird "
-        "nicht gespeichert."
+        "LS-INSIDER TESTMODE"
     )
-
-    # ========================================================
-    # MITTWOCH
-    # ========================================================
-
-    print("")
     print(
-        "🗞️ TEST 1/2 – MITTWOCH"
+        "========================================"
     )
 
-    gtabase_data = await get_gtabase_data()
-
-    if not gtabase_data.get(
-        "period"
-    ):
-
-        raise RuntimeError(
-            "GTABase-Test fehlgeschlagen: "
-            "Kein Zeitraum erkannt."
-        )
-
-    wednesday_message = build_wednesday_message(
-        gtabase_data
-    )
-
-    print("")
-    print(
-        "📤 Sende Mittwoch-Design..."
-    )
-
-    send_discord(
-        wednesday_message
-    )
+    # --------------------------------------------------------
+    # MITTWOCH DESIGN
+    # --------------------------------------------------------
 
     print(
-        "✅ Mittwoch-Test gesendet."
+        "\n[1/2] Hole GTA Online Eventwoche..."
     )
 
-    # ========================================================
-    # DONNERSTAG
-    # ========================================================
+    weekly_data = await get_gtabase_data()
 
-    print("")
-    print(
-        "🕵️ TEST 2/2 – DONNERSTAG"
-    )
-
-    article = await get_rockstar_news()
-
-    # Im Test wird die gefundene aktuelle
-    # Rockstar-Meldung immer als NEU behandelt.
-
-    category_pairs = [
-        (
-            "🆕 **NEU**",
-            article.get(
-                "title",
-                "Neue Rockstar-Meldung"
-            )
-        )
-    ]
-
-    article_text = (
-        article.get("title", "")
-        + " "
-        + article.get("body", "")
-    )
-
-    if contains_any(
-        article_text,
-        [
-            "2x",
-            "3x",
-            "4x",
-            "5x",
-            "bonus",
-            "bonuses",
-            "gta$ & rp"
-        ]
-    ):
-
-        category_pairs.append(
-            (
-                "💰 **NEUER BONUS**",
-                "Neue Bonusbelohnungen "
-                "wurden entdeckt."
+    if weekly_data:
+        wednesday_message = (
+            build_wednesday_message(
+                weekly_data
             )
         )
 
-    if contains_any(
-        article_text,
-        [
-            "new vehicle",
-            "new car",
-            "new supercar",
-            "supercar",
-            "vehicle",
-            "fahrzeug",
-            "pegassi",
-            "bravado",
-            "grotti"
-        ]
-    ):
+        print(
+            "\n--- MITTWOCH ---\n"
+        )
 
-        category_pairs.append(
-            (
-                "🚗 **NEUE FAHRZEUGMELDUNG**",
-                "Eine neue Fahrzeugmeldung "
-                "wurde entdeckt."
+        print(
+            wednesday_message
+        )
+
+        send_discord(
+            wednesday_message
+        )
+
+        print(
+            "\nMittwoch-Test wurde gesendet."
+        )
+
+    else:
+        print(
+            "Keine Wocheninformationen gefunden."
+        )
+
+    # --------------------------------------------------------
+    # DONNERSTAG DESIGN
+    # --------------------------------------------------------
+
+    print(
+        "\n[2/2] Hole aktuellste Rockstar-Meldung..."
+    )
+
+    news = await get_rockstar_news()
+
+    if news:
+
+        print(
+            "\nGefundene Meldung:"
+        )
+
+        print(
+            news["title"]
+        )
+
+        print(
+            news["url"]
+        )
+
+        state = load_state()
+
+        categories, signature = (
+            detect_thursday_categories(
+                news,
+                state
             )
         )
 
-    if contains_any(
-        article_text,
-        [
-            "free",
-            "reward",
-            "gift",
-            "belohnung",
-            "geschenk",
-            "kostenlos"
-        ]
-    ):
-
-        category_pairs.append(
-            (
-                "🎁 **NEUE BELOHNUNG**",
-                "Eine neue Belohnung oder "
-                "kostenlose Sache wurde entdeckt."
+        thursday_message = (
+            build_thursday_message(
+                news,
+                categories
             )
         )
 
-    category_lines = []
-
-    for heading, content in category_pairs:
-
-        category_lines.append(
-            f"{heading}\n{content}"
+        print(
+            "\n--- DONNERSTAG ---\n"
         )
 
-    thursday_message = build_thursday_message(
-        article,
-        category_lines
-    )
+        print(
+            thursday_message
+        )
 
-    print("")
+        send_discord(
+            thursday_message
+        )
+
+        print(
+            "\nDonnerstag-Test wurde gesendet."
+        )
+
+    else:
+        print(
+            "Keine passende Rockstar-Meldung gefunden."
+        )
+
+    # --------------------------------------------------------
+    # Im Testmodus NICHT speichern.
+    #
+    # Dadurch können wir dieselben Meldungen mehrfach testen,
+    # ohne dass der normale Änderungsmechanismus beeinflusst
+    # wird.
+    # --------------------------------------------------------
+
     print(
-        "📤 Sende Donnerstag-Design..."
-    )
-
-    send_discord(
-        thursday_message
-    )
-
-    print(
-        "✅ Donnerstag-Test gesendet."
-    )
-
-    print("")
-    print("=" * 70)
-    print(
-        "🏁 BEIDE TESTS ABGESCHLOSSEN"
-    )
-    print("=" * 70)
-
-    print("")
-    print(
-        "ℹ️ Kein Veröffentlichungsstatus "
-        "wurde gespeichert."
+        "\nTEST_MODE ist aktiv – "
+        "weekly_state.json wurde nicht verändert."
     )
 
 
-# ============================================================
-# HAUPTPROGRAMM
-# ============================================================
-
-async def main():
-
+async def run_normal():
     now = datetime.now(
         VIENNA
     )
 
-    print("")
-    print("=" * 70)
-    print("🚗 LS-INSIDER")
-    print("=" * 70)
+    weekday = now.weekday()
 
-    print(
-        f"🕐 Wien: "
-        f"{now.strftime('%d.%m.%Y %H:%M:%S')}"
-    )
+    # --------------------------------------------------------
+    # MITTWOCH
+    # --------------------------------------------------------
 
-    # ========================================================
-    # TEST
-    # ========================================================
+    if weekday == 2:
 
-    if TEST_MODE:
+        data = await get_gtabase_data()
 
-        await run_test()
+        if not data:
+            print(
+                "Keine GTA-Wocheninformationen gefunden."
+            )
+            return
+
+        message = build_wednesday_message(
+            data
+        )
+
+        state = load_state()
+
+        signature = make_signature(
+            data.get("period"),
+            data.get("title"),
+            data.get("bonuses"),
+            data.get("free_items"),
+            data.get("vehicles"),
+            data.get("discounts"),
+            data.get("weekly_challenge"),
+        )
+
+        if state.get(
+            "wednesday_signature"
+        ) == signature:
+
+            print(
+                "Mittwochsbeitrag bereits veröffentlicht."
+            )
+
+            return
+
+        send_discord(
+            message
+        )
+
+        state[
+            "wednesday_signature"
+        ] = signature
+
+        save_state(
+            state
+        )
+
+        print(
+            "Mittwochsbeitrag veröffentlicht."
+        )
 
         return
 
-    # ========================================================
-    # NORMALBETRIEB
-    # ========================================================
+    # --------------------------------------------------------
+    # DONNERSTAG
+    # --------------------------------------------------------
 
-    weekday = now.weekday()
+    if weekday == 3:
 
-    print(
-        f"📅 Wochentag: {weekday}"
-    )
+        news = await get_rockstar_news()
 
-    # Mittwoch
-    if weekday == 2:
+        if not news:
+            print(
+                "Keine passende Rockstar-Meldung gefunden."
+            )
+            return
 
-        print("")
+        state = load_state()
+
+        categories, signature = (
+            detect_thursday_categories(
+                news,
+                state
+            )
+        )
+
+        # ----------------------------------------------------
+        # Keine neue oder geänderte Information:
+        # NICHT posten.
+        # ----------------------------------------------------
+
+        if not categories:
+            print(
+                "Keine neue oder geänderte Information – "
+                "kein Donnerstagspost."
+            )
+            return
+
+        message = build_thursday_message(
+            news,
+            categories
+        )
+
+        send_discord(
+            message
+        )
+
+        state[
+            "rockstar_url"
+        ] = news["url"]
+
+        state[
+            "rockstar_signature"
+        ] = signature
+
+        save_state(
+            state
+        )
+
         print(
-            "🟢 MITTWOCH-MODUS"
+            "Donnerstag-Geheimbericht veröffentlicht."
         )
 
-        gtabase_data = await get_gtabase_data()
+        return
 
-        run_wednesday(
-            gtabase_data
-        )
-
-    # Donnerstag
-    elif weekday == 3:
-
-        print("")
-        print(
-            "🟣 DONNERSTAG-MODUS"
-        )
-
-        await run_thursday()
-
+    # --------------------------------------------------------
     # Andere Tage
-    else:
+    # --------------------------------------------------------
 
-        print("")
-        print(
-            "ℹ️ Heute ist kein "
-            "LS-Insider-Tag."
-        )
-
-    print("")
-    print("=" * 70)
     print(
-        "🏁 LS-INSIDER ABGESCHLOSSEN"
+        "Heute ist kein LS-Insider-Posting-Tag."
     )
-    print("=" * 70)
 
 
-# ============================================================
-# START
-# ============================================================
+async def main():
+
+    if TEST_MODE:
+        await run_test()
+    else:
+        await run_normal()
+
 
 if __name__ == "__main__":
-
-    try:
-
-        asyncio.run(
-            main()
-        )
-
-    except Exception as error:
-
-        print("")
-        print(
-            "❌ LS-INSIDER FEHLER:"
-        )
-
-        print(
-            repr(error)
-        )
-
-        raise
+    asyncio.run(
+        main()
+    )
