@@ -1,3 +1,4 @@
+```python
 import asyncio
 import hashlib
 import json
@@ -31,20 +32,30 @@ VIENNA = ZoneInfo("Europe/Vienna")
 
 DISCORD_LIMIT = 1900
 
+# ---------------------------------------------------------
+# TESTMODUS
+# ---------------------------------------------------------
+# True  = Wir tun so, als wäre Mittwoch.
+# False = Der echte Wochentag wird verwendet.
+TEST_WEDNESDAY = True
+
 
 # =========================================================
 # ALLGEMEINE HILFSFUNKTIONEN
 # =========================================================
 
 def clean_text(text):
+
     if not text:
         return ""
 
     text = re.sub(r"\s+", " ", text)
+
     return text.strip()
 
 
 def unique_items(items):
+
     result = []
 
     for item in items:
@@ -58,6 +69,7 @@ def unique_items(items):
 
 
 def make_signature(data):
+
     raw = json.dumps(
         data,
         sort_keys=True,
@@ -114,7 +126,6 @@ def send_discord(message):
     if not message:
         return
 
-    # Discord-Nachrichten bei Bedarf aufteilen.
     chunks = []
 
     while len(message) > DISCORD_LIMIT:
@@ -306,7 +317,6 @@ def extract_bonus_items(items):
             upper
         ):
 
-            # Preiszeilen nicht als Bonus übernehmen.
             if "%" not in item:
 
                 results.append(item)
@@ -530,7 +540,7 @@ async def get_gtabase_data():
 
 
 # =========================================================
-# GTABASE DISCORD-TEXT
+# DISCORD-WOCHENPOST
 # =========================================================
 
 def build_weekly_message(data):
@@ -579,13 +589,21 @@ def build_weekly_message(data):
     lines.append("")
 
     lines.append(
-        f"📰 **EVENT**\n{title}"
+        "📰 **EVENT**"
+    )
+
+    lines.append(
+        title
     )
 
     lines.append("")
 
     lines.append(
-        f"📅 **ZEITRAUM**\n{period}"
+        "📅 **ZEITRAUM**"
+    )
+
+    lines.append(
+        period
     )
 
     lines.append("")
@@ -597,6 +615,7 @@ def build_weekly_message(data):
     if bonuses:
 
         for item in bonuses[:12]:
+
             lines.append(
                 f"• {item}"
             )
@@ -616,6 +635,7 @@ def build_weekly_message(data):
     if free_items:
 
         for item in free_items[:10]:
+
             lines.append(
                 f"• {item}"
             )
@@ -635,6 +655,7 @@ def build_weekly_message(data):
     if vehicles:
 
         for item in vehicles[:15]:
+
             lines.append(
                 f"• {item}"
             )
@@ -654,6 +675,7 @@ def build_weekly_message(data):
     if discounts:
 
         for item in discounts[:20]:
+
             lines.append(
                 f"• {item}"
             )
@@ -706,6 +728,73 @@ def build_weekly_message(data):
 
 
 # =========================================================
+# MITTWOCH
+# =========================================================
+
+def run_wednesday(gtabase_data):
+
+    state = load_state()
+
+    period = gtabase_data.get(
+        "period",
+        ""
+    )
+
+    if not period:
+
+        raise RuntimeError(
+            "GTABase konnte keinen Zeitraum erkennen."
+        )
+
+    signature = make_signature(
+        gtabase_data
+    )
+
+    previous_signature = state.get(
+        "wednesday_signature"
+    )
+
+    if previous_signature == signature:
+
+        print(
+            "ℹ️ Diese Eventwoche wurde bereits gepostet."
+        )
+
+        return
+
+    print(
+        "📨 Neue GTABase-Eventwoche gefunden."
+    )
+
+    message = build_weekly_message(
+        gtabase_data
+    )
+
+    print("")
+    print(
+        "📤 Sende Eventwoche an Discord..."
+    )
+
+    send_discord(
+        message
+    )
+
+    state["week_period"] = period
+
+    state["wednesday_signature"] = signature
+
+    state["wednesday_data"] = gtabase_data
+
+    save_state(
+        state
+    )
+
+    print(
+        "✅ Mittwoch-Ausgabe wurde gepostet."
+    )
+
+
+# =========================================================
 # ROCKSTAR
 # =========================================================
 
@@ -723,7 +812,9 @@ async def get_rockstar_data():
 
         try:
 
-            print("🌐 Öffne Rockstar Newswire...")
+            print(
+                "🌐 Öffne Rockstar Newswire..."
+            )
 
             await page.goto(
                 ROCKSTAR_URL,
@@ -774,6 +865,7 @@ async def get_rockstar_data():
                     ):
 
                         if href.startswith("/"):
+
                             href = (
                                 "https://www.rockstargames.com"
                                 + href
@@ -789,7 +881,6 @@ async def get_rockstar_data():
                 except Exception:
                     pass
 
-            # Doppelte Links entfernen.
             clean_candidates = []
 
             for candidate in candidates:
@@ -808,8 +899,6 @@ async def get_rockstar_data():
                     "text": body_text
                 }
 
-            # Normalerweise steht der aktuellste
-            # Artikel zuerst.
             latest = clean_candidates[0]
 
             return {
@@ -824,7 +913,7 @@ async def get_rockstar_data():
 
 
 # =========================================================
-# ROCKSTAR RELEVANTE INFORMATIONEN
+# ROCKSTAR VERGLEICH
 # =========================================================
 
 def extract_relevant_rockstar_data(text):
@@ -859,21 +948,12 @@ def extract_relevant_rockstar_data(text):
         )
     )
 
-    relevant = {
-
+    return {
         "multipliers": multipliers,
-
         "discounts": discounts,
-
         "gta_money": gta_money
     }
 
-    return relevant
-
-
-# =========================================================
-# DONNERSTAG-VERGLEICH
-# =========================================================
 
 def compare_week_data(
     gtabase_data,
@@ -913,8 +993,6 @@ def compare_week_data(
         )
     )
 
-    # Wenn Rockstar relevante Daten enthält,
-    # vergleichen wir die Art der Boni/Rabatte.
     gta_multipliers = sorted(
         set(
             re.findall(
@@ -1034,76 +1112,6 @@ def build_special_message(
 
 
 # =========================================================
-# MITTWOCH
-# =========================================================
-
-def run_wednesday(gtabase_data):
-
-    state = load_state()
-
-    period = gtabase_data.get(
-        "period",
-        ""
-    )
-
-    if not period:
-
-        raise RuntimeError(
-            "GTABase konnte keinen Zeitraum erkennen."
-        )
-
-    signature = make_signature(
-        gtabase_data
-    )
-
-    previous_signature = state.get(
-        "wednesday_signature"
-    )
-
-    if previous_signature == signature:
-
-        print(
-            "ℹ️ Diese Eventwoche wurde bereits gepostet."
-        )
-
-        return
-
-    print(
-        "📨 Neue GTABase-Eventwoche gefunden."
-    )
-
-    message = build_weekly_message(
-        gtabase_data
-    )
-
-    send_discord(
-        message
-    )
-
-    state = {
-
-        "week_period": period,
-
-        "wednesday_signature": signature,
-
-        "wednesday_data": gtabase_data,
-
-        "thursday_signature":
-            state.get(
-                "thursday_signature"
-            )
-    }
-
-    save_state(
-        state
-    )
-
-    print(
-        "✅ Mittwoch-Ausgabe wurde gepostet."
-    )
-
-
-# =========================================================
 # DONNERSTAG
 # =========================================================
 
@@ -1136,8 +1144,6 @@ def run_thursday(
         rockstar_data
     )
 
-    # Wenn keine relevanten Unterschiede
-    # gefunden wurden, nichts posten.
     if not differences:
 
         print(
@@ -1192,6 +1198,23 @@ async def main():
         VIENNA
     )
 
+    if TEST_WEDNESDAY:
+
+        current_weekday = 2
+
+        print("")
+        print(
+            "🧪 TESTMODUS AKTIV"
+        )
+
+        print(
+            "➡️ Heute wird als MITTWOCH behandelt."
+        )
+
+    else:
+
+        current_weekday = now.weekday()
+
     print("")
     print("=" * 70)
     print("🚗 LS-INSIDER")
@@ -1203,8 +1226,8 @@ async def main():
     )
 
     print(
-        f"📅 Wochentag: "
-        f"{now.strftime('%A')}"
+        f"📅 Verwendeter Wochentag: "
+        f"{current_weekday}"
     )
 
     # -----------------------------------------------------
@@ -1233,7 +1256,7 @@ async def main():
     # MITTWOCH
     # -----------------------------------------------------
 
-    if now.weekday() == 2:
+    if current_weekday == 2:
 
         print("")
         print(
@@ -1248,7 +1271,7 @@ async def main():
     # DONNERSTAG
     # -----------------------------------------------------
 
-    elif now.weekday() == 3:
+    elif current_weekday == 3:
 
         print("")
         print(
@@ -1306,3 +1329,5 @@ if __name__ == "__main__":
         )
 
         raise
+```
+
