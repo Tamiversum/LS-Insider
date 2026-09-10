@@ -183,8 +183,25 @@ IGTA_SECTION_NAMES = {
 }
 
 
+def detect_igta_section(text: str):
+    """Erkennt Hauptbereiche tolerant gegen kleine Änderungen im Seiten-Markup."""
+    normalized = normalize_heading(text.rstrip(":"))
+
+    if "bonuses" in normalized and ("reward" in normalized or normalized == "bonuses"):
+        return "Bonuses and Rewards"
+    if "free penaud la coureuse" in normalized:
+        return "Free Penaud La Coureuse and HSW Upgrade"
+    if "discount" in normalized or "sale" in normalized and "discount" in normalized:
+        return "Discounts"
+    if normalized in {"vehicles", "vehicle"} or normalized.startswith("vehicles"):
+        return "Vehicles"
+    if normalized in {"challenges", "challenge"} or normalized.startswith("challenges"):
+        return "Challenges"
+    return None
+
+
 def entries_to_sections(entries):
-    """Erkennt die iGTA-Hauptsektionen robust, unabhängig von h1/h2-Markup."""
+    """Erkennt die iGTA-Hauptsektionen tolerant gegen unterschiedliche HTML-Strukturen."""
     sections = {}
     current = None
     article_title = normalize_heading(extract_article_title(entries)) if entries else ""
@@ -199,15 +216,12 @@ def entries_to_sections(entries):
         if normalized == article_title:
             continue
 
-        if normalized in IGTA_SECTION_NAMES:
-            current = text.rstrip(":")
+        detected = detect_igta_section(text)
+        if detected:
+            current = detected
             sections.setdefault(current, [])
             continue
 
-        # Manche iGTA-Versionen liefern Hauptüberschriften als h1/h2, aber
-        # die tatsächlichen Überschriftentexte sind trotzdem eindeutig.
-        # Unbekannte h1/h2 ignorieren wir, damit Navigation nicht als Artikel
-        # gewertet wird. h3/h4 bleiben immer im aktuellen Bereich.
         if current is not None:
             sections[current].append({"tag": tag, "text": text})
 
@@ -224,16 +238,33 @@ def normalize_heading(value: str) -> str:
 def get_section(sections, *names):
     wanted = [normalize_heading(name) for name in names]
 
+    aliases = {
+        "bonuses": "Bonuses and Rewards",
+        "bonuses and rewards": "Bonuses and Rewards",
+        "bonuses & rewards": "Bonuses and Rewards",
+        "free penaud la coureuse": "Free Penaud La Coureuse and HSW Upgrade",
+        "free penaud la coureuse and hsw upgrade": "Free Penaud La Coureuse and HSW Upgrade",
+        "discounts": "Discounts",
+        "discounts and sales": "Discounts",
+        "discounts & sales": "Discounts",
+        "vehicle": "Vehicles",
+        "vehicles": "Vehicles",
+        "vehicles and more": "Vehicles",
+        "challenge": "Challenges",
+        "challenges": "Challenges",
+    }
+
     for key, values in sections.items():
         normalized = normalize_heading(key)
-        if normalized in wanted:
+        canonical = aliases.get(normalized, key)
+        canonical_norm = normalize_heading(canonical)
+        if normalized in wanted or canonical_norm in wanted:
             return values
         for wanted_name in wanted:
-            if normalized.startswith(wanted_name) or wanted_name in normalized:
+            if normalized.startswith(wanted_name) or wanted_name.startswith(normalized):
                 return values
 
     return []
-
 
 def section_texts(entries, include_headings=False):
     allowed = {"p", "li"}
@@ -366,6 +397,32 @@ def translate_bonus_line(line: str) -> str:
         result = re.sub(pattern, replacement, result, flags=re.I)
 
     result = re.sub(r"\s+", " ", result).strip()
+    return result
+
+
+def fallback_section_from_entries(entries, section_type):
+    """Fallback, falls iGTA eine Hauptüberschrift nicht sauber als eigenes Element liefert."""
+    markers = {
+        "bonuses": ("bonuses", "rewards"),
+        "gifts": ("free penaud la coureuse",),
+        "discounts": ("discounts",),
+        "vehicles": ("vehicles",),
+        "challenges": ("challenges",),
+    }
+    wanted = markers.get(section_type, ())
+    current = False
+    result = []
+    for entry in entries:
+        text = clean_line(entry.get("text", ""))
+        norm = normalize_heading(text)
+        if not current:
+            if all(token in norm for token in wanted) if len(wanted) > 1 else any(token in norm for token in wanted):
+                current = True
+                continue
+        else:
+            if detect_igta_section(text) and not any(token in norm for token in wanted):
+                break
+            result.append(entry)
     return result
 
 
@@ -632,6 +689,29 @@ def extract_weekly_challenge(sections):
 def make_wednesday_post(article_html: str, source_url: str):
     entries = parse_html_entries(article_html)
     sections = entries_to_sections(entries)
+
+    # Zusätzliche Fallback-Sektionen für Seitenvarianten, bei denen iGTA
+    # Überschriften nicht sauber als eigene HTML-Elemente ausliefert.
+    if not get_section(sections, "Bonuses and Rewards", "Bonuses & Rewards", "Bonuses"):
+        fallback = fallback_section_from_entries(entries, "bonuses")
+        if fallback:
+            sections["Bonuses and Rewards"] = fallback
+    if not get_section(sections, "Free Penaud La Coureuse", "Penaud La Coureuse"):
+        fallback = fallback_section_from_entries(entries, "gifts")
+        if fallback:
+            sections["Free Penaud La Coureuse and HSW Upgrade"] = fallback
+    if not get_section(sections, "Discounts"):
+        fallback = fallback_section_from_entries(entries, "discounts")
+        if fallback:
+            sections["Discounts"] = fallback
+    if not get_section(sections, "Vehicles"):
+        fallback = fallback_section_from_entries(entries, "vehicles")
+        if fallback:
+            sections["Vehicles"] = fallback
+    if not get_section(sections, "Challenges"):
+        fallback = fallback_section_from_entries(entries, "challenges")
+        if fallback:
+            sections["Challenges"] = fallback
 
     title = extract_article_title(entries)
     intro = extract_intro(entries)
