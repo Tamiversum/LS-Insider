@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: "0 * * * 4"
+    # Mittwoch und Donnerstag, jede Stunde
+    - cron: "0 * * * 3,4"
 
-# GitHub Actions darf last_article.txt
-# ins Repository zurückschreiben.
 permissions:
   contents: write
 
@@ -38,16 +37,16 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python bot.py
 
-      - name: Letzten Artikel speichern
+      - name: Status speichern
         run: |
           git config user.name "LS-Insider Bot"
           git config user.email "ls-insider-bot@users.noreply.github.com"
 
-          git add last_article.txt
+          git add weekly_state.json
 
           if git diff --cached --quiet; then
-            echo "ℹ️ Kein neuer Artikel gespeichert."
+            echo "ℹ️ Kein neuer Status gespeichert."
           else
-            git commit -m "Update last posted article"
+            git commit -m "Update weekly event state"
             git push
           fi
