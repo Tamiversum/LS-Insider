@@ -34,14 +34,8 @@ VIENNA = ZoneInfo("Europe/Vienna")
 # ------------------------------------------------------------
 # TEST-MODUS
 # ------------------------------------------------------------
-# True:
-#   Mittwoch und Donnerstag werden bei einem manuellen Lauf
-#   zu Testzwecken gesendet.
-#
-#   Der State wird NICHT verändert.
-#
-# False:
-#   Normalbetrieb.
+# True = manueller Testlauf
+# False = normaler Mittwoch/Donnerstag-Betrieb
 TEST_MODE = True
 
 DISCORD_LIMIT = 1900
@@ -65,11 +59,8 @@ def clean_text(text):
 
 
 def clean_line(text):
-    if not text:
-        return ""
-
     return clean_text(
-        re.sub(r"\s+", " ", text)
+        re.sub(r"\s+", " ", text or "")
     ).strip()
 
 
@@ -115,7 +106,6 @@ def load_state():
             encoding="utf-8",
         ) as file:
             return json.load(file)
-
     except Exception:
         return {}
 
@@ -158,9 +148,7 @@ def send_discord(message):
             message[:split_at]
         )
 
-        message = message[
-            split_at:
-        ].lstrip()
+        message = message[split_at:].lstrip()
 
     if message:
         chunks.append(message)
@@ -187,29 +175,6 @@ def send_discord(message):
 # ============================================================
 # DATUM
 # ============================================================
-
-MONTHS = {
-    "January": "Januar",
-    "February": "Februar",
-    "March": "März",
-    "April": "April",
-    "May": "Mai",
-    "June": "Juni",
-    "July": "Juli",
-    "August": "August",
-    "September": "September",
-    "October": "Oktober",
-    "November": "November",
-    "December": "Dezember",
-}
-
-
-def german_month(month):
-    return MONTHS.get(
-        month,
-        month,
-    )
-
 
 def current_week_dates():
     now = datetime.now(
@@ -245,10 +210,7 @@ def current_week_period():
     )
 
 
-def format_period(
-    start_date,
-    end_date,
-):
+def format_period(start_date, end_date):
     return (
         f"{start_date.day:02d}."
         f"{start_date.month:02d}."
@@ -261,7 +223,7 @@ def format_period(
 
 
 # ============================================================
-# HTML-PARSER FÜR IGRANDTHEFTAUTO
+# IGRANDTHEFTAUTO HTML PARSER
 # ============================================================
 
 class ArticleParser(HTMLParser):
@@ -280,19 +242,12 @@ class ArticleParser(HTMLParser):
         )
 
         self.entries = []
-
         self.current_tag = None
         self.current_parts = []
-
-        self.heading_seen = False
         self.article_started = False
         self.article_finished = False
 
-    def handle_starttag(
-        self,
-        tag,
-        attrs,
-    ):
+    def handle_starttag(self, tag, attrs):
         if self.article_finished:
             return
 
@@ -316,9 +271,7 @@ class ArticleParser(HTMLParser):
             return
 
         if self.current_tag:
-            self.current_parts.append(
-                data
-            )
+            self.current_parts.append(data)
 
     def handle_endtag(self, tag):
         if self.article_finished:
@@ -357,12 +310,11 @@ class ArticleParser(HTMLParser):
 def parse_article_html(source):
     parser = ArticleParser()
     parser.feed(source)
-
     return parser.entries
 
 
 # ============================================================
-# IGRANDTHEFTAUTO – WOCHENARTIKEL FINDEN
+# IGRANDTHEFTAUTO ABRUF
 # ============================================================
 
 def make_expected_igta_url():
@@ -373,28 +325,41 @@ def make_expected_igta_url():
     ).lower()
 
     return (
-        f"https://www.igrandtheftauto.com/"
-        f"gtaonline/news/"
-        f"this-week-in-gta-online-"
+        "https://www.igrandtheftauto.com/"
+        "gtaonline/news/"
+        "this-week-in-gta-online-"
         f"{month_name}-"
         f"{start.day}-"
         f"{start.year}"
     )
 
 
-def fetch_url(url):
+def requests_headers():
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/140.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,"
+            "application/xml;q=0.9,image/avif,image/webp,"
+            "*/*;q=0.8"
+        ),
+        "Accept-Language": (
+            "en-US,en;q=0.9,de;q=0.8"
+        ),
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": "https://www.google.com/",
+    }
+
+
+def fetch_url_requests(url):
     response = requests.get(
         url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/140.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-        },
+        headers=requests_headers(),
         timeout=30,
     )
 
@@ -403,41 +368,100 @@ def fetch_url(url):
     return response.text
 
 
-def find_latest_weekly_article_from_listing(
-    listing_html
-):
-    pattern = re.compile(
-        r'href=["\']'
-        r'([^"\']*/gtaonline/news/'
-        r'this-week-in-gta-online-[^"\']+)'
-        r'["\']',
-        flags=re.IGNORECASE,
-    )
+async def fetch_url_playwright(url):
+    async with async_playwright() as playwright:
 
-    matches = pattern.findall(
-        listing_html
-    )
-
-    for href in matches:
-        absolute = urljoin(
-            IGTA_NEWS_URL,
-            href,
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features="
+                "AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
         )
 
-        if (
-            "/this-week-in-gta-online-"
-            in absolute.lower()
-        ):
-            return absolute
+        context = await browser.new_context(
+            viewport={
+                "width": 1440,
+                "height": 2400,
+            },
+            locale="en-US",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/140.0.0.0 Safari/537.36"
+            ),
+        )
 
-    return None
+        page = await context.new_page()
+
+        try:
+            await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+
+            await page.wait_for_timeout(
+                5000
+            )
+
+            # Cookie-Banner
+            try:
+                buttons = page.locator(
+                    "button"
+                )
+
+                for i in range(
+                    await buttons.count()
+                ):
+                    button = buttons.nth(i)
+
+                    try:
+                        text = clean_line(
+                            await button.inner_text()
+                        )
+
+                        if any(
+                            word in text.lower()
+                            for word in [
+                                "accept",
+                                "accept all",
+                                "agree",
+                                "akzeptieren",
+                                "alle akzeptieren",
+                            ]
+                        ):
+                            await button.click(
+                                timeout=2000
+                            )
+                            break
+
+                    except Exception:
+                        continue
+
+            except Exception:
+                pass
+
+            await page.wait_for_timeout(
+                2500
+            )
+
+            content = await page.content()
+
+            return content
+
+        finally:
+            await context.close()
+            await browser.close()
 
 
-def fetch_igrandtheftauto():
-    expected_url = (
-        make_expected_igta_url()
-    )
+async def fetch_igta_article():
+    expected_url = make_expected_igta_url()
 
+    print()
     print(
         "iGrandTheftAuto:"
     )
@@ -448,18 +472,28 @@ def fetch_igrandtheftauto():
         expected_url
     )
 
+    # --------------------------------------------------------
+    # 1. Playwright – Hauptweg gegen 403
+    # --------------------------------------------------------
+
     try:
-        article_html = fetch_url(
+        article_html = await fetch_url_playwright(
             expected_url
         )
 
-        if (
-            "This Week in GTA Online:"
-            in article_html
+        entries = parse_article_html(
+            article_html
+        )
+
+        if any(
+            entry["tag"] == "h1"
+            and "This Week in GTA Online:"
+            in entry["text"]
+            for entry in entries
         ):
             print(
                 "Aktueller Wochenartikel "
-                "direkt gefunden."
+                "über Browser erfolgreich gefunden."
             )
 
             return (
@@ -469,50 +503,178 @@ def fetch_igrandtheftauto():
 
     except Exception as error:
         print(
-            "Direkter Abruf nicht möglich:"
+            "Browser-Abruf des direkten "
+            "Artikels nicht möglich:"
         )
         print(error)
 
+    # --------------------------------------------------------
+    # 2. Requests – Fallback
+    # --------------------------------------------------------
+
+    try:
+        article_html = fetch_url_requests(
+            expected_url
+        )
+
+        entries = parse_article_html(
+            article_html
+        )
+
+        if entries:
+            print(
+                "Aktueller Wochenartikel "
+                "über direkten Abruf gefunden."
+            )
+
+            return (
+                expected_url,
+                article_html,
+            )
+
+    except Exception as error:
+        print(
+            "Direkter Requests-Abruf nicht möglich:"
+        )
+        print(error)
+
+    # --------------------------------------------------------
+    # 3. Newsseite über Playwright
+    # --------------------------------------------------------
+
+    print()
     print(
         "Suche aktuellen Wochenartikel "
         "über die GTA-Online-Newsseite ..."
     )
 
-    listing_html = fetch_url(
-        IGTA_NEWS_URL
+    try:
+        listing_html = await fetch_url_playwright(
+            IGTA_NEWS_URL
+        )
+
+        article_url = (
+            find_latest_weekly_article_from_listing(
+                listing_html
+            )
+        )
+
+        if article_url:
+            print(
+                "Gefundener Artikel:"
+            )
+            print(
+                article_url
+            )
+
+            article_html = (
+                await fetch_url_playwright(
+                    article_url
+                )
+            )
+
+            entries = parse_article_html(
+                article_html
+            )
+
+            if entries:
+                return (
+                    article_url,
+                    article_html,
+                )
+
+    except Exception as error:
+        print(
+            "Browser-Newsseite konnte "
+            "nicht gelesen werden:"
+        )
+        print(error)
+
+    # --------------------------------------------------------
+    # 4. Newsseite über Requests
+    # --------------------------------------------------------
+
+    try:
+        listing_html = fetch_url_requests(
+            IGTA_NEWS_URL
+        )
+
+        article_url = (
+            find_latest_weekly_article_from_listing(
+                listing_html
+            )
+        )
+
+        if article_url:
+            print(
+                "Gefundener Artikel:"
+            )
+            print(
+                article_url
+            )
+
+            article_html = fetch_url_requests(
+                article_url
+            )
+
+            return (
+                article_url,
+                article_html,
+            )
+
+    except Exception as error:
+        print(
+            "Requests-Newsseite konnte "
+            "nicht gelesen werden:"
+        )
+        print(error)
+
+    raise RuntimeError(
+        "iGrandTheftAuto konnte den aktuellen "
+        "Wochenartikel nicht abrufen."
     )
 
-    article_url = (
-        find_latest_weekly_article_from_listing(
+
+def find_latest_weekly_article_from_listing(
+    listing_html
+):
+    patterns = [
+        re.compile(
+            r'href=["\']'
+            r'([^"\']*this-week-in-gta-online-[^"\']+)'
+            r'["\']',
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r'href=["\']'
+            r'([^"\']*/gtaonline/news/[^"\']+)'
+            r'["\']',
+            re.IGNORECASE,
+        ),
+    ]
+
+    for pattern in patterns:
+        matches = pattern.findall(
             listing_html
         )
-    )
 
-    if not article_url:
-        raise RuntimeError(
-            "Kein aktueller iGrandTheftAuto-"
-            "Wochenartikel gefunden."
-        )
+        for href in matches:
+            absolute = urljoin(
+                IGTA_NEWS_URL + "/",
+                href,
+            )
 
-    print(
-        "Gefundener Artikel:"
-    )
-    print(
-        article_url
-    )
+            if (
+                "this-week-in-gta-online-"
+                in absolute.lower()
+            ):
+                return absolute
 
-    article_html = fetch_url(
-        article_url
-    )
-
-    return (
-        article_url,
-        article_html,
-    )
+    return None
 
 
 # ============================================================
-# IGRANDTHEFTAUTO – STRUKTUR
+# IGRANDTHEFTAUTO STRUKTUR
 # ============================================================
 
 def entries_to_sections(entries):
@@ -549,40 +711,24 @@ def get_section(
     sections,
     *possible_names,
 ):
-    for name in possible_names:
-        if name in sections:
-            return sections[name]
-
     wanted = {
         clean_line(name).lower()
         for name in possible_names
     }
 
     for key, values in sections.items():
-        if (
-            clean_line(key).lower()
-            in wanted
-        ):
+        key_clean = clean_line(
+            key
+        ).lower()
+
+        if key_clean in wanted:
             return values
 
     return []
 
 
-def find_entry(
-    entries,
-    predicate,
-):
-    for entry in entries:
-        if predicate(
-            entry["text"]
-        ):
-            return entry["text"]
-
-    return ""
-
-
 # ============================================================
-# WOCHENSCHWERPUNKT
+# ARTIKEL / ZEITRAUM
 # ============================================================
 
 def extract_article_title(entries):
@@ -609,28 +755,22 @@ def extract_intro(entries):
 
             if (
                 text
-                and not text.startswith(
-                    "Published "
-                )
-                and not text.startswith(
-                    "Last Updated "
-                )
+                and not text.startswith("Published ")
+                and not text.startswith("Last Updated ")
             ):
                 return text
 
     return ""
 
 
-def extract_period_from_title(
-    title
-):
+def extract_period_from_title(title):
     match = re.search(
         r"This Week in GTA Online:\s*"
         r"([A-Za-z]+)\s+"
         r"(\d{1,2}),\s+"
         r"(\d{4})",
         title,
-        flags=re.IGNORECASE,
+        re.IGNORECASE,
     )
 
     if not match:
@@ -640,20 +780,26 @@ def extract_period_from_title(
     day = int(match.group(2))
     year = int(match.group(3))
 
-    month_number = None
+    months = {
+        "january": 1,
+        "february": 2,
+        "march": 3,
+        "april": 4,
+        "may": 5,
+        "june": 6,
+        "july": 7,
+        "august": 8,
+        "september": 9,
+        "october": 10,
+        "november": 11,
+        "december": 12,
+    }
 
-    for number, name in enumerate(
-        MONTHS.keys(),
-        start=1,
-    ):
-        if (
-            name.lower()
-            == month_name.lower()
-        ):
-            month_number = number
-            break
+    month_number = months.get(
+        month_name.lower()
+    )
 
-    if month_number is None:
+    if not month_number:
         return current_week_period()
 
     start = datetime(
@@ -671,6 +817,10 @@ def extract_period_from_title(
         end,
     )
 
+
+# ============================================================
+# WOCHENSCHWERPUNKT
+# ============================================================
 
 def detect_event_name(
     title,
@@ -699,26 +849,18 @@ def detect_event_name(
     ]
 
     for search, headline in known_events:
-        if (
-            search.lower()
-            in combined.lower()
-        ):
+        if search.lower() in combined.lower():
             return (
                 headline,
                 build_german_intro(
-                    search,
-                    intro,
+                    search
                 ),
             )
-
-    # Fallback für neue Events
-    # ohne harte Abhängigkeit von einem Namen.
-    fallback = title
 
     fallback = re.sub(
         r"^This Week in GTA Online:\s*",
         "",
-        fallback,
+        title,
         flags=re.IGNORECASE,
     )
 
@@ -738,23 +880,21 @@ def detect_event_name(
     return (
         fallback.upper(),
         build_german_intro(
-            None,
-            intro,
+            None
         ),
     )
 
 
 def build_german_intro(
     event_name,
-    source_intro,
 ):
     if event_name == "Business Rivalries":
         return (
             "Die Geschäfte in Los Santos "
-            "laufen auf Hochtouren. "
-            "Diese Woche warten wieder "
-            "erhöhte Auszahlungen, Rabatte "
-            "und besondere Angebote auf euch."
+            "laufen auf Hochtouren. Diese "
+            "Woche warten wieder erhöhte "
+            "Auszahlungen, Rabatte und "
+            "besondere Angebote auf euch."
         )
 
     if event_name == "Brand Wars":
@@ -775,9 +915,6 @@ def build_german_intro(
             "und besondere Angebote auf euch."
         )
 
-    # Allgemeiner Fallback:
-    # Die Einleitung bleibt kurz und wird
-    # nicht als englischer Originaltext ausgegeben.
     return (
         "In Los Santos wartet diese Woche "
         "wieder eine neue Auswahl an Boni, "
@@ -793,54 +930,66 @@ def build_german_intro(
 def translate_bonus_line(line):
     line = clean_line(line)
 
-    # 2X / 3X / 4X / usw.
     match = re.match(
-        r"^(\d+)X\s+"
-        r"GTA\$\s*(?:and\s*RP|&\s*RP)"
-        r"\s+on\s+(.+)$",
+        r"^(\d+)X\s+GTA\$\s+and\s+RP\s+on\s+(.+)$",
         line,
-        flags=re.IGNORECASE,
+        re.IGNORECASE,
     )
 
     if match:
-        multiplier = match.group(1)
-        activity = clean_line(
-            match.group(2)
-        )
-
         return (
-            f"{multiplier}× GTA$ & RP – "
-            f"{activity}"
+            f"{match.group(1)}× GTA$ & RP – "
+            f"{clean_line(match.group(2))}"
         )
 
     match = re.match(
         r"^(\d+)X\s+GTA\$\s+on\s+(.+)$",
         line,
-        flags=re.IGNORECASE,
+        re.IGNORECASE,
     )
 
     if match:
-        multiplier = match.group(1)
         activity = clean_line(
             match.group(2)
         )
 
+        # GTA+ Zusatz erkennen
+        gta_plus_match = re.search(
+            r"\((\d+)X\s+GTA\+"
+            r"(?:\s+Members?)?\)",
+            activity,
+            re.IGNORECASE,
+        )
+
+        if gta_plus_match:
+            gta_plus = gta_plus_match.group(1)
+
+            activity = re.sub(
+                r"\s*\(\d+X\s+GTA\+"
+                r"(?:\s+Members?)?\)",
+                "",
+                activity,
+                flags=re.IGNORECASE,
+            )
+
+            return (
+                f"{match.group(1)}× GTA$ – "
+                f"{activity} "
+                f"({gta_plus}× für GTA+)"
+            )
+
         return (
-            f"{multiplier}× GTA$ – "
+            f"{match.group(1)}× GTA$ – "
             f"{activity}"
         )
 
-    return line
+    return ""
 
 
-def extract_bonuses(
-    sections
-):
+def extract_bonuses(sections):
     raw = get_section(
         sections,
         "Bonuses and Rewards",
-        "Bonuses & Rewards",
-        "Event Bonuses and Rewards",
     )
 
     results = []
@@ -851,27 +1000,12 @@ def extract_bonuses(
         if not line:
             continue
 
-        # Der Satz über die Kleidung gehört
-        # zu den Geschenken, nicht zu den Boni.
         if (
-            "Deliver Business Battle crates"
-            in line
-        ):
-            continue
-
-        if (
-            line.startswith(
-                "Six Figure Tee"
-            )
-            or line.startswith(
-                "Ride or Die Tee"
-            )
-            or line.startswith(
-                "Red and White Ammu-Nation Cap"
-            )
-            or line.startswith(
-                "Bourgeoix Tee"
-            )
+            "Business Battle" in line
+            or "Six Figure Tee" in line
+            or "Ride or Die Tee" in line
+            or "Ammu-Nation Cap" in line
+            or "Bourgeoix Tee" in line
         ):
             continue
 
@@ -879,7 +1013,7 @@ def extract_bonuses(
             line
         )
 
-        if translated != line:
+        if translated:
             results.append(
                 translated
             )
@@ -893,31 +1027,27 @@ def extract_bonuses(
 # GESCHENKE
 # ============================================================
 
-def extract_gifts(
-    sections
-):
+def extract_gifts(sections):
     results = []
 
     bonuses = get_section(
         sections,
         "Bonuses and Rewards",
-        "Bonuses & Rewards",
-        "Event Bonuses and Rewards",
     )
 
     bonus_text = " ".join(
         bonuses
-    )
+    ).lower()
 
-    clothing_items = [
+    clothing = [
         "Six Figure Tee",
         "Ride or Die Tee",
         "Red and White Ammu-Nation Cap",
         "Bourgeoix Tee",
     ]
 
-    for item in clothing_items:
-        if item.lower() in bonus_text.lower():
+    for item in clothing:
+        if item.lower() in bonus_text:
             results.append(
                 f"{item} – kostenlose Belohnung"
             )
@@ -930,15 +1060,13 @@ def extract_gifts(
 
     free_text = " ".join(
         free_section
-    )
+    ).lower()
 
-    if (
-        "free Penaud La Coureuse"
-        in free_text.lower()
-    ):
+    if "penaude la coureuse" in free_text:
         results.append(
             "Penaud La Coureuse – KOSTENLOS "
-            "(bei erfüllter Voraussetzung)"
+            "+ HSW-Upgrade bei erfüllter "
+            "Wochenherausforderung"
         )
 
     return unique_items(
@@ -950,15 +1078,14 @@ def extract_gifts(
 # RABATTE
 # ============================================================
 
-def extract_discounts(
-    sections
-):
+def extract_discounts(sections):
     raw = get_section(
         sections,
         "Discounts",
     )
 
     results = []
+    seen = set()
 
     for line in raw:
         line = clean_line(line)
@@ -966,12 +1093,13 @@ def extract_discounts(
         if not line:
             continue
 
-        # Kostenlos
-        if re.search(
-            r"\bfree\b",
+        free_match = re.search(
+            r"\s+[–-]\s*Free$",
             line,
-            flags=re.IGNORECASE,
-        ):
+            re.IGNORECASE,
+        )
+
+        if free_match:
             name = re.sub(
                 r"\s+[–-]\s*Free$",
                 "",
@@ -979,49 +1107,39 @@ def extract_discounts(
                 flags=re.IGNORECASE,
             )
 
-            results.append(
-                {
-                    "name": clean_line(name),
-                    "percentage": 100,
-                    "free": True,
-                }
+            item = {
+                "name": clean_line(name),
+                "percentage": 100,
+                "free": True,
+            }
+
+        else:
+            match = re.search(
+                r"\s+[–-]\s*(\d+)%\s*off$",
+                line,
+                re.IGNORECASE,
             )
 
-            continue
+            if not match:
+                continue
 
-        # Prozent
-        match = re.search(
-            r"\s+[–-]\s*(\d+)%\s*off$",
-            line,
-            flags=re.IGNORECASE,
-        )
+            percentage = int(
+                match.group(1)
+            )
 
-        if not match:
-            continue
+            name = re.sub(
+                r"\s+[–-]\s*\d+%\s*off$",
+                "",
+                line,
+                flags=re.IGNORECASE,
+            )
 
-        percentage = int(
-            match.group(1)
-        )
-
-        name = re.sub(
-            r"\s+[–-]\s*\d+%\s*off$",
-            "",
-            line,
-            flags=re.IGNORECASE,
-        )
-
-        results.append(
-            {
+            item = {
                 "name": clean_line(name),
                 "percentage": percentage,
                 "free": False,
             }
-        )
 
-    cleaned = []
-    seen = set()
-
-    for item in results:
         key = (
             item["name"].lower(),
             item["percentage"],
@@ -1032,25 +1150,23 @@ def extract_discounts(
             continue
 
         seen.add(key)
-        cleaned.append(item)
+        results.append(item)
 
-    cleaned.sort(
+    results.sort(
         key=lambda item: (
             -item["percentage"],
             item["name"].lower(),
         )
     )
 
-    return cleaned
+    return results
 
 
 # ============================================================
 # FAHRZEUGE
 # ============================================================
 
-def extract_vehicles(
-    sections
-):
+def extract_vehicles(sections):
     raw = get_section(
         sections,
         "Vehicles",
@@ -1058,7 +1174,16 @@ def extract_vehicles(
 
     results = []
 
-    current_subsection = ""
+    category = ""
+
+    category_names = [
+        "Luxury Autos",
+        "Premium Deluxe Motorsport",
+        "Hao's Premium Test Ride",
+        "Hao’s Premium Test Ride",
+        "LS Car Meet Test Rides",
+        "Lucky Wheel",
+    ]
 
     for line in raw:
         line = clean_line(line)
@@ -1066,31 +1191,45 @@ def extract_vehicles(
         if not line:
             continue
 
-        # Unterüberschriften
-        if line.endswith(":"):
-            current_subsection = line
+        matched_category = None
+
+        for possible in category_names:
+            if possible.lower() in line.lower():
+                matched_category = possible
+                break
+
+        if matched_category:
+            category = matched_category
             continue
 
-        # Nur Fahrzeugzeilen.
-        # Die Kategorie wird später vorangestellt.
-        if (
-            "(" in line
-            and ")" in line
+        # Einzelne Fahrzeugnamen.
+        # Text mit langen Beschreibungen wird ignoriert.
+        if len(line) > 100:
+            continue
+
+        # Offensichtliche Nicht-Fahrzeugzeilen ignorieren.
+        if any(
+            word in line.lower()
+            for word in [
+                "available at",
+                "visit",
+                "purchase",
+                "this week",
+                "discount",
+                "test ride",
+            ]
         ):
+            continue
+
+        # Fahrzeugnamen aus HTML-Liste übernehmen.
+        if category:
             results.append(
                 {
-                    "name": clean_line(
-                        re.sub(
-                            r"\s*\([^)]*\)",
-                            "",
-                            line,
-                        )
-                    ),
-                    "category": current_subsection.rstrip(":"),
+                    "name": line,
+                    "category": category,
                 }
             )
 
-    # Doppelte Fahrzeuge entfernen
     cleaned = []
     seen = set()
 
@@ -1106,68 +1245,46 @@ def extract_vehicles(
     return cleaned
 
 
-def format_vehicle(
-    vehicle
-):
+def format_vehicle(vehicle):
     name = vehicle["name"]
     category = vehicle.get(
         "category",
         "",
     )
 
-    if (
-        "Luxury Autos" in category
-    ):
+    if category == "Luxury Autos":
         return (
-            f"🏎️ **{name}** "
-            f"– Luxury Autos"
+            f"🚗 **{name}** – Luxury Autos"
         )
 
-    if (
-        "Premium Deluxe" in category
-    ):
+    if category == "Premium Deluxe Motorsport":
         return (
-            f"🚗 **{name}** "
-            f"– Premium Deluxe Motorsport"
+            f"🚗 **{name}** – Premium Deluxe Motorsport"
         )
 
-    if (
-        "Hao" in category
-    ):
+    if "Hao" in category:
         return (
-            f"🏎️ **{name}** "
-            f"– HSW Test Ride"
+            f"🏎️ **{name}** – HSW Test Ride"
         )
 
-    if (
-        "LS Car Meet" in category
-    ):
+    if "LS Car Meet" in category:
         return (
-            f"🚗 **{name}** "
-            f"– LS Car Meet Test Ride"
+            f"🚗 **{name}** – LS Car Meet Test Ride"
         )
 
-    if (
-        "Lucky Wheel" in category
-        or "Diamond Casino" in category
-    ):
+    if "Lucky Wheel" in category:
         return (
-            f"🎰 **{name}** "
-            f"– Glücksrad"
+            f"🎰 **{name}** – Glücksrad"
         )
 
-    return (
-        f"🚗 **{name}**"
-    )
+    return f"🚗 **{name}**"
 
 
 # ============================================================
 # WOCHENHERAUSFORDERUNG
 # ============================================================
 
-def extract_weekly_challenge(
-    sections
-):
+def extract_weekly_challenge(sections):
     challenges = get_section(
         sections,
         "Challenges",
@@ -1176,10 +1293,6 @@ def extract_weekly_challenge(
     if not challenges:
         return None
 
-    result = []
-
-    current_heading = ""
-
     for line in challenges:
         line = clean_line(line)
 
@@ -1187,45 +1300,18 @@ def extract_weekly_challenge(
             continue
 
         if (
-            line == "Weekly Challenge:"
-            or line == "Weekly Challenge"
+            "GTA$1,000,000" in line
+            and "Product" in line
         ):
-            current_heading = (
-                "Weekly Challenge"
+            return (
+                "GTA$1.000.000 durch den "
+                "Verkauf aller Arten von "
+                "Produkten verdienen – dazu "
+                "gibt es weitere GTA$1.000.000 "
+                "und den Junk Tracksuit."
             )
-            continue
 
-        if current_heading == "Weekly Challenge":
-            result.append(line)
-
-            # Nur der erste relevante Satz
-            break
-
-    if not result:
-        return None
-
-    text = result[0]
-
-    # Aktuelle Struktur:
-    # Earn GTA$1,000,000 ... extra GTA$1,000,000
-    # and the Junk Tracksuit
-    #
-    # Wir formulieren daraus eine kurze deutsche Version.
-    if (
-        "GTA$1,000,000"
-        in text
-        and "Junk Tracksuit"
-        in text
-    ):
-        return (
-            "GTA$1.000.000 durch den "
-            "Verkauf aller Arten von Produkten "
-            "verdienen – dazu gibt es "
-            "weitere GTA$1.000.000 "
-            "und den Junk Tracksuit."
-        )
-
-    return text
+    return None
 
 
 # ============================================================
@@ -1245,25 +1331,11 @@ def build_wednesday_message(
 ):
     message = []
 
-    # --------------------------------------------------------
-    # 1. HEADER
-    # --------------------------------------------------------
     message.append(
         "🗞️ **LS-INSIDER**"
     )
     message.append("")
-    message.append(
-        "# **DIESE WOCHE IN LOS SANTOS**"
-    )
-    message.append("")
-    message.append(
-        "━━━━━━━━━━━━━━━━━━━━"
-    )
-    message.append("")
 
-    # --------------------------------------------------------
-    # 2. WOCHENSCHWERPUNKT
-    # --------------------------------------------------------
     message.append(
         "### 📰 **WOCHENSCHWERPUNKT**"
     )
@@ -1274,7 +1346,6 @@ def build_wednesday_message(
     )
     message.append("")
 
-    # Zeitraum DIREKT unter der Überschrift
     message.append(
         f"📅 **{period}**"
     )
@@ -1290,9 +1361,7 @@ def build_wednesday_message(
     )
     message.append("")
 
-    # --------------------------------------------------------
-    # 4. BONI
-    # --------------------------------------------------------
+    # Boni
     if bonuses:
         message.append(
             "### 💰 **BONI**"
@@ -1310,9 +1379,7 @@ def build_wednesday_message(
         )
         message.append("")
 
-    # --------------------------------------------------------
-    # 5. FAHRZEUGE
-    # --------------------------------------------------------
+    # Fahrzeuge
     if vehicles:
         message.append(
             "### 🚗 **FAHRZEUGE**"
@@ -1321,9 +1388,7 @@ def build_wednesday_message(
 
         for vehicle in vehicles:
             message.append(
-                format_vehicle(
-                    vehicle
-                )
+                format_vehicle(vehicle)
             )
 
         message.append("")
@@ -1332,71 +1397,52 @@ def build_wednesday_message(
         )
         message.append("")
 
-    # --------------------------------------------------------
-    # 6. SONDERANGEBOTE
-    # --------------------------------------------------------
-    paid_discounts = [
-        item
-        for item in discounts
-        if not item.get("free")
-    ]
-
-    free_discounts = [
-        item
-        for item in discounts
-        if item.get("free")
-    ]
-
+    # Sonderangebote
     if discounts:
         message.append(
             "### 🏷️ **SONDERANGEBOTE**"
         )
         message.append("")
 
-        if paid_discounts:
-            maximum = max(
-                item["percentage"]
-                for item in paid_discounts
+        paid = [
+            item
+            for item in discounts
+            if not item["free"]
+        ]
+
+        free = [
+            item
+            for item in discounts
+            if item["free"]
+        ]
+
+        grouped = {}
+
+        for item in paid:
+            grouped.setdefault(
+                item["percentage"],
+                [],
+            ).append(
+                item["name"]
             )
 
-            message.append(
-                f"**Bis zu {maximum} % Rabatt**"
-            )
-            message.append("")
-
-            grouped = {}
-
-            for item in paid_discounts:
-                grouped.setdefault(
-                    item["percentage"],
-                    [],
-                ).append(
-                    item["name"]
-                )
-
-            for percentage in sorted(
-                grouped.keys(),
-                reverse=True,
+        for percentage in sorted(
+            grouped,
+            reverse=True,
+        ):
+            for name in unique_items(
+                grouped[percentage]
             ):
-                names = unique_items(
-                    grouped[percentage]
-                )
-
-                for name in names:
-                    message.append(
-                        f"🔻 **{name}** "
-                        f"– {percentage} %"
-                    )
-
-        if free_discounts:
-            if paid_discounts:
-                message.append("")
-
-            for item in free_discounts:
                 message.append(
-                    f"🆓 **{item['name']}** "
-                    "– KOSTENLOS"
+                    f"• **{name}** "
+                    f"– {percentage} % Rabatt"
                 )
+
+        for item in free:
+            message.append(
+                f"• **{item['name']}** "
+                "– KOSTENLOS"
+            )
 
         message.append("")
         message.append(
@@ -1404,9 +1450,7 @@ def build_wednesday_message(
         )
         message.append("")
 
-    # --------------------------------------------------------
-    # 7. GESCHENKE
-    # --------------------------------------------------------
+    # Geschenke
     if gifts:
         message.append(
             "### 🎁 **GESCHENKE**"
@@ -1415,7 +1459,7 @@ def build_wednesday_message(
 
         for gift in gifts:
             message.append(
-                f"🎁 {gift}"
+                f"• {gift}"
             )
 
         message.append("")
@@ -1424,9 +1468,7 @@ def build_wednesday_message(
         )
         message.append("")
 
-    # --------------------------------------------------------
-    # 8. WOCHENHERAUSFORDERUNG
-    # --------------------------------------------------------
+    # Herausforderung
     if challenge:
         message.append(
             "### 🏆 **WOCHENHERAUSFORDERUNG**"
@@ -1434,7 +1476,7 @@ def build_wednesday_message(
         message.append("")
 
         message.append(
-            f"🏆 {challenge}"
+            f"• {challenge}"
         )
 
         message.append("")
@@ -1443,9 +1485,7 @@ def build_wednesday_message(
         )
         message.append("")
 
-    # --------------------------------------------------------
-    # 9. QUELLE
-    # --------------------------------------------------------
+    # Quelle
     message.append(
         "🔗 **QUELLE / VOLLSTÄNDIGER ARTIKEL**"
     )
@@ -1472,16 +1512,8 @@ async def run_wednesday():
     print("=" * 70)
 
     source_url, article_html = (
-        await asyncio.to_thread(
-            fetch_igrandtheftauto
-        )
+        await fetch_igta_article()
     )
-
-    if not article_html:
-        raise RuntimeError(
-            "iGrandTheftAuto konnte "
-            "nicht gelesen werden."
-        )
 
     entries = parse_article_html(
         article_html
@@ -1490,8 +1522,7 @@ async def run_wednesday():
     if not entries:
         raise RuntimeError(
             "Der iGrandTheftAuto-Artikel "
-            "konnte nicht strukturiert "
-            "ausgelesen werden."
+            "konnte nicht ausgelesen werden."
         )
 
     sections = entries_to_sections(
@@ -1501,6 +1532,11 @@ async def run_wednesday():
     title = extract_article_title(
         entries
     )
+
+    if not title:
+        raise RuntimeError(
+            "Kein Artikel-Titel erkannt."
+        )
 
     intro = extract_intro(
         entries
@@ -1541,7 +1577,7 @@ async def run_wednesday():
     )
 
     # --------------------------------------------------------
-    # DOPPLUNGEN ENTFERNEN
+    # DOPPLUNGEN VERMEIDEN
     # --------------------------------------------------------
 
     discount_names = {
@@ -1549,9 +1585,6 @@ async def run_wednesday():
         for item in discounts
     }
 
-    # Fahrzeuge, die ohnehin nur als Rabatt
-    # auftauchen, werden aus dem Fahrzeugblock
-    # entfernt. So erscheint z.B. kein Auto zweimal.
     vehicles = [
         vehicle
         for vehicle in vehicles
@@ -1559,93 +1592,57 @@ async def run_wednesday():
         not in discount_names
     ]
 
-    # Falls ein kostenloses Fahrzeug gleichzeitig
-    # im Rabattbereich auftaucht, gehört es zu Geschenke.
-    free_vehicle_names = {
-        item["name"].lower()
-        for item in discounts
-        if item.get("free")
-    }
-
-    vehicles = [
-        vehicle
-        for vehicle in vehicles
-        if vehicle["name"].lower()
-        not in free_vehicle_names
-    ]
-
     print()
+    print("=" * 70)
     print(
-        "MITTWOCH ERKANNT:"
+        "MITTWOCH-DATEN ERFOLGREICH AUSGELESEN"
     )
+    print("=" * 70)
+
     print(
         "Quelle:",
         source_url,
     )
+
     print(
         "Artikel:",
         title,
     )
+
     print(
         "Zeitraum:",
         period,
     )
+
     print(
         "Wochenschwerpunkt:",
         headline,
     )
-    print(
-        "Einleitung:",
-        german_intro,
-    )
-
-    print()
-    print("BONI:")
-
-    for item in bonuses:
-        print(
-            " -",
-            item,
-        )
-
-    print()
-    print("FAHRZEUGE:")
-
-    for item in vehicles:
-        print(
-            " -",
-            format_vehicle(item),
-        )
-
-    print()
-    print("SONDERANGEBOTE:")
-
-    for item in discounts:
-        print(
-            f" - {item['percentage']} % | "
-            f"{item['name']}"
-        )
-
-    print()
-    print("GESCHENKE:")
-
-    for item in gifts:
-        print(
-            " -",
-            item,
-        )
-
-    print()
-    print("WOCHENHERAUSFORDERUNG:")
 
     print(
-        " -",
-        challenge,
+        "Boni:",
+        len(bonuses),
     )
 
-    # --------------------------------------------------------
-    # DESIGN
-    # --------------------------------------------------------
+    print(
+        "Fahrzeuge:",
+        len(vehicles),
+    )
+
+    print(
+        "Sonderangebote:",
+        len(discounts),
+    )
+
+    print(
+        "Geschenke:",
+        len(gifts),
+    )
+
+    print(
+        "Wochenherausforderung:",
+        "JA" if challenge else "NEIN",
+    )
 
     message = build_wednesday_message(
         period=period,
@@ -1667,10 +1664,6 @@ async def run_wednesday():
     print("=" * 70)
     print(message)
     print("=" * 70)
-
-    # --------------------------------------------------------
-    # SIGNATUR
-    # --------------------------------------------------------
 
     signature = make_signature(
         source_url,
@@ -1719,15 +1712,10 @@ async def run_wednesday():
         )
         == signature
     ):
-        print()
         print(
             "Diese Wochenmeldung wurde "
             "bereits gepostet."
         )
-        print(
-            "Kein doppelter Mittwoch-Post."
-        )
-
         return
 
     send_discord(
@@ -1758,19 +1746,31 @@ async def run_wednesday():
 
 
 # ============================================================
-# DONNERSTAG – GEHEIMBERICHT
+# DONNERSTAG – ROCKSTAR
 # ============================================================
 
 async def fetch_rockstar_news():
-    async with playwright_context() as context:
+    async with async_playwright() as playwright:
 
-        page = await context.new_page(
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features="
+                "AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+
+        context = await browser.new_context(
             viewport={
                 "width": 1440,
                 "height": 2400,
             },
             locale="de-DE",
         )
+
+        page = await context.new_page()
 
         try:
             await page.goto(
@@ -1783,9 +1783,7 @@ async def fetch_rockstar_news():
                 7000
             )
 
-            # ------------------------------------------------
             # Cookie-Dialog
-            # ------------------------------------------------
             try:
                 buttons = page.locator(
                     "button"
@@ -1797,16 +1795,12 @@ async def fetch_rockstar_news():
                     button = buttons.nth(i)
 
                     try:
-                        button_text = (
+                        text = clean_line(
                             await button.inner_text()
                         )
 
-                        lower = (
-                            button_text.lower()
-                        )
-
                         if any(
-                            word in lower
+                            word in text.lower()
                             for word in [
                                 "accept",
                                 "akzeptieren",
@@ -1830,9 +1824,6 @@ async def fetch_rockstar_news():
 
             articles = []
 
-            # ------------------------------------------------
-            # Article-Elemente
-            # ------------------------------------------------
             article_nodes = page.locator(
                 "article"
             )
@@ -1847,29 +1838,26 @@ async def fetch_rockstar_news():
                         await article.inner_text()
                     )
 
-                    link_locator = article.locator(
+                    links = article.locator(
                         "a[href]"
                     )
 
-                    if (
-                        await link_locator.count()
-                        == 0
-                    ):
+                    if await links.count() == 0:
                         continue
 
                     href = await (
-                        link_locator.first
-                        .get_attribute("href")
+                        links.first.get_attribute(
+                            "href"
+                        )
                     )
 
                     if not href:
                         continue
 
-                    if href.startswith("/"):
-                        href = (
-                            "https://www.rockstargames.com"
-                            + href
-                        )
+                    href = urljoin(
+                        "https://www.rockstargames.com",
+                        href,
+                    )
 
                     title = ""
 
@@ -1883,32 +1871,12 @@ async def fetch_rockstar_news():
                             selector
                         )
 
-                        if (
-                            await headings.count()
-                            > 0
-                        ):
+                        if await headings.count():
                             title = clean_line(
                                 await headings.first.inner_text()
                             )
 
                             if title:
-                                break
-
-                    if not title:
-                        lines = [
-                            clean_line(x)
-                            for x in text.splitlines()
-                            if clean_line(x)
-                        ]
-
-                        for line in lines:
-                            if (
-                                len(line) >= 20
-                                and not line.lower().startswith(
-                                    "rockstar games"
-                                )
-                            ):
-                                title = line
                                 break
 
                     if title:
@@ -1923,9 +1891,7 @@ async def fetch_rockstar_news():
                 except Exception:
                     continue
 
-            # ------------------------------------------------
-            # Fallback: Links
-            # ------------------------------------------------
+            # Fallback Links
             if not articles:
                 links = page.locator(
                     "a[href]"
@@ -1950,17 +1916,12 @@ async def fetch_rockstar_news():
                         if not href or not title:
                             continue
 
-                        if href.startswith("/"):
-                            href = (
-                                "https://www.rockstargames.com"
-                                + href
-                            )
+                        href = urljoin(
+                            "https://www.rockstargames.com",
+                            href,
+                        )
 
-                        if (
-                            "/newswire/" in href.lower()
-                            or "/newswire/article/"
-                            in href.lower()
-                        ):
+                        if "/newswire" in href.lower():
                             articles.append(
                                 {
                                     "title": title,
@@ -1972,10 +1933,7 @@ async def fetch_rockstar_news():
                     except Exception:
                         continue
 
-            # ------------------------------------------------
-            # GTA-Online-Filter
-            # ------------------------------------------------
-
+            # GTA Online Filter
             filtered = []
 
             excluded_words = [
@@ -1992,32 +1950,23 @@ async def fetch_rockstar_news():
 
             for article in articles:
                 title = clean_line(
-                    article.get(
-                        "title",
-                        "",
-                    )
+                    article["title"]
                 )
 
                 text = clean_text(
-                    article.get(
-                        "text",
-                        "",
-                    )
+                    article["text"]
                 )
 
                 combined = (
-                    f"{title}\n{text}"
+                    title + "\n" + text
                 ).lower()
 
-                is_gta_online = (
-                    "gta online"
-                    in combined
-                    or
+                if (
+                    "gta online" not in combined
+                    and
                     "grand theft auto online"
-                    in combined
-                )
-
-                if not is_gta_online:
+                    not in combined
+                ):
                     continue
 
                 if any(
@@ -2030,30 +1979,17 @@ async def fetch_rockstar_news():
                     article
                 )
 
-            # ------------------------------------------------
-            # Doppelte URLs
-            # ------------------------------------------------
-
             result = []
             seen = set()
 
             for article in filtered:
-                url = article.get(
-                    "url",
-                    "",
-                )
-
-                if not url:
-                    continue
+                url = article["url"]
 
                 if url in seen:
                     continue
 
                 seen.add(url)
-
-                result.append(
-                    article
-                )
+                result.append(article)
 
             print(
                 "Relevante GTA-Online-News "
@@ -2063,62 +1999,8 @@ async def fetch_rockstar_news():
             return result
 
         finally:
-            await context.browser.close()
-
-
-class playwright_context:
-
-    def __init__(self):
-        self.playwright = None
-        self.browser = None
-        self.browser_context = None
-
-    async def __aenter__(self):
-        self.playwright = (
-            await async_playwright()
-            .start()
-        )
-
-        self.browser = (
-            await self.playwright.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features="
-                    "AutomationControlled"
-                ],
-            )
-        )
-
-        self.browser_context = (
-            await self.browser.new_context(
-                viewport={
-                    "width": 1440,
-                    "height": 2400,
-                },
-                locale="de-DE",
-            )
-        )
-
-        self.new_page = (
-            self.browser_context.new_page
-        )
-
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type,
-        exc_value,
-        traceback,
-    ):
-        if self.browser_context:
-            await self.browser_context.close()
-
-        if self.browser:
-            await self.browser.close()
-
-        if self.playwright:
-            await self.playwright.stop()
+            await context.close()
+            await browser.close()
 
 
 # ============================================================
@@ -2129,26 +2011,19 @@ def is_relevant_gta_online_article(
     article
 ):
     title = clean_line(
-        article.get(
-            "title",
-            "",
-        )
+        article.get("title", "")
     )
 
     text = clean_text(
-        article.get(
-            "text",
-            "",
-        )
+        article.get("text", "")
     )
 
     combined = (
-        f"{title}\n{text}"
+        title + "\n" + text
     ).lower()
 
     if (
-        "gta online"
-        not in combined
+        "gta online" not in combined
         and
         "grand theft auto online"
         not in combined
@@ -2166,10 +2041,8 @@ def is_relevant_gta_online_article(
         "grand theft auto v",
     ]
 
-    title_lower = title.lower()
-
     if any(
-        word in title_lower
+        word in title.lower()
         for word in excluded
     ):
         return False
@@ -2177,18 +2050,10 @@ def is_relevant_gta_online_article(
     return True
 
 
-def article_signature(
-    article
-):
+def article_signature(article):
     return make_signature(
-        article.get(
-            "title",
-            "",
-        ),
-        article.get(
-            "url",
-            "",
-        ),
+        article.get("title", ""),
+        article.get("url", ""),
     )
 
 
@@ -2196,25 +2061,17 @@ def article_signature(
 # DONNERSTAG – KATEGORIEN
 # ============================================================
 
-def detect_thursday_categories(
-    article
-):
+def detect_thursday_categories(article):
     title = clean_line(
-        article.get(
-            "title",
-            "",
-        )
+        article.get("title", "")
     )
 
     text = clean_text(
-        article.get(
-            "text",
-            "",
-        )
+        article.get("text", "")
     )
 
     combined = (
-        f"{title}\n{text}"
+        title + "\n" + text
     ).lower()
 
     categories = []
@@ -2257,25 +2114,23 @@ def detect_thursday_categories(
             "💰 **neuer Bonus**"
         )
 
-    vehicle_words = [
-        "vehicle",
-        "vehicles",
-        "car",
-        "cars",
-        "motorcycle",
-        "motorcycles",
-        "pegassi",
-        "bravado",
-        "benefactor",
-        "declasse",
-        "vapid",
-        "grotti",
-        "overflod",
-    ]
-
     if any(
         word in combined
-        for word in vehicle_words
+        for word in [
+            "vehicle",
+            "vehicles",
+            "car",
+            "cars",
+            "motorcycle",
+            "motorcycles",
+            "pegassi",
+            "bravado",
+            "benefactor",
+            "declasse",
+            "vapid",
+            "grotti",
+            "overflod",
+        ]
     ):
         categories.append(
             "🚗 **neue Fahrzeugmeldung**"
@@ -2305,14 +2160,9 @@ def detect_thursday_categories(
 # DONNERSTAG – DESIGN
 # ============================================================
 
-def build_thursday_message(
-    article
-):
+def build_thursday_message(article):
     title = clean_line(
-        article.get(
-            "title",
-            "",
-        )
+        article.get("title", "")
     )
 
     url = article.get(
@@ -2351,12 +2201,12 @@ def build_thursday_message(
         )
         message.append("")
 
-    if categories:
-        for category in categories:
-            message.append(
-                category
-            )
+    for category in categories:
+        message.append(
+            category
+        )
 
+    if categories:
         message.append("")
 
     message.append(
@@ -2419,7 +2269,6 @@ async def run_thursday():
             "Keine relevante GTA-Online-"
             "Meldung gefunden."
         )
-
         return
 
     article = relevant[0]
@@ -2461,10 +2310,6 @@ async def run_thursday():
     print(message)
     print("=" * 70)
 
-    # --------------------------------------------------------
-    # TEST
-    # --------------------------------------------------------
-
     if TEST_MODE:
         print()
         print(
@@ -2484,10 +2329,6 @@ async def run_thursday():
 
         return
 
-    # --------------------------------------------------------
-    # NORMALBETRIEB
-    # --------------------------------------------------------
-
     state = load_state()
 
     if (
@@ -2496,15 +2337,10 @@ async def run_thursday():
         )
         == signature
     ):
-        print()
         print(
             "Diese GTA-Online-Meldung wurde "
             "bereits gepostet."
         )
-        print(
-            "Kein doppelter Donnerstag-Post."
-        )
-
         return
 
     send_discord(
