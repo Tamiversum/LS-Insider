@@ -6,10 +6,13 @@ on:
   schedule:
     - cron: "0 * * * 4"
 
+# GitHub Actions darf last_article.txt
+# ins Repository zurückschreiben.
+permissions:
+  contents: write
 
 jobs:
   eventwoche:
-
     runs-on: ubuntu-latest
 
     steps:
@@ -19,31 +22,24 @@ jobs:
         with:
           fetch-depth: 0
 
-
       - name: Python einrichten
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-
       - name: Abhängigkeiten installieren
         run: pip install -r requirements.txt
-
 
       - name: Chromium installieren
         run: playwright install --with-deps chromium
 
-
       - name: LS-Insider starten
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-
         run: python bot.py
-
 
       - name: Letzten Artikel speichern
         run: |
-
           git config user.name "LS-Insider Bot"
           git config user.email "ls-insider-bot@users.noreply.github.com"
 
