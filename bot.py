@@ -1,143 +1,49 @@
-import os
 import asyncio
-import requests
 import re
 from playwright.async_api import async_playwright
 
 
-WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
+# =========================================================
+# GTABASE
+# =========================================================
 
-ROCKSTAR_URL = "https://www.rockstargames.com/de/newswire?tag_id=735"
-
-LAST_ARTICLE_FILE = "last_article.txt"
-
-DISCORD_LIMIT = 1950
-
-
-# ---------------------------------------------------------
-# DISCORD
-# ---------------------------------------------------------
-
-def send_to_discord(message):
-    response = requests.post(
-        WEBHOOK_URL,
-        json={"content": message},
-        timeout=30
-    )
-
-    if response.status_code not in (200, 204):
-        raise Exception(
-            f"Discord-Webhook Fehler: "
-            f"{response.status_code} {response.text}"
-        )
+GTABASE_URL = (
+    "https://www.gtabase.com/"
+    "gta-online/weekly-update-bonuses-discounts"
+)
 
 
-# ---------------------------------------------------------
-# GESPEICHERTEN ARTIKEL LADEN / SPEICHERN
-# ---------------------------------------------------------
-
-def load_last_article():
-    try:
-        if os.path.exists(LAST_ARTICLE_FILE):
-            with open(
-                LAST_ARTICLE_FILE,
-                "r",
-                encoding="utf-8"
-            ) as file:
-                return file.read().strip()
-
-    except Exception as error:
-        print(
-            f"⚠️ Konnte gespeicherten Artikel "
-            f"nicht lesen: {error}"
-        )
-
-    return ""
-
-
-def save_last_article(article_url):
-    try:
-        with open(
-            LAST_ARTICLE_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
-            file.write(article_url)
-
-    except Exception as error:
-        print(
-            f"⚠️ Konnte Artikel nicht speichern: "
-            f"{error}"
-        )
-
-
-# ---------------------------------------------------------
-# COOKIES
-# ---------------------------------------------------------
-
-async def accept_cookies(page):
-
-    cookie_buttons = [
-        "Alle akzeptieren",
-        "Akzeptieren",
-        "Alle Cookies akzeptieren",
-        "Accept All",
-        "Accept"
-    ]
-
-    for button_text in cookie_buttons:
-
-        try:
-            button = page.get_by_text(
-                button_text,
-                exact=True
-            )
-
-            if await button.count() > 0:
-
-                await button.first.click(
-                    timeout=3000
-                )
-
-                await page.wait_for_timeout(
-                    2000
-                )
-
-                print(
-                    "🍪 Cookie-Einstellungen "
-                    "akzeptiert."
-                )
-
-                return
-
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------
-# TEXT-HILFSFUNKTIONEN
-# ---------------------------------------------------------
+# =========================================================
+# HILFSFUNKTIONEN
+# =========================================================
 
 def clean_text(text):
-
     if not text:
         return ""
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
+    text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
-def unique_items(items):
+def print_section(title, items):
+    print("")
+    print("=" * 60)
+    print(title)
+    print("=" * 60)
 
+    if not items:
+        print("Keine Einträge gefunden.")
+        return
+
+    for item in items:
+        print(f"• {item}")
+
+
+def unique_items(items):
     result = []
 
     for item in items:
-
         item = clean_text(item)
 
         if item and item not in result:
@@ -146,99 +52,33 @@ def unique_items(items):
     return result
 
 
-# ---------------------------------------------------------
-# AKTUELLSTEN GTA-ONLINE-ARTIKEL FINDEN
-# ---------------------------------------------------------
+# =========================================================
+# ZEITRAUM ERKENNEN
+# =========================================================
 
-async def find_latest_gta_article(page):
-
-    articles = await page.locator(
-        'a[href*="/newswire/article/"]'
-    ).all()
-
-    for article in articles:
-
-        try:
-
-            title = clean_text(
-                await article.inner_text()
-            )
-
-            link = await article.get_attribute(
-                "href"
-            )
-
-            if not title or not link:
-                continue
-
-            if "/newswire/article/" not in link:
-                continue
-
-            if "GTA Online" not in title:
-                continue
-
-            if link.startswith("/"):
-
-                link = (
-                    "https://www.rockstargames.com"
-                    + link
-                )
-
-            print(
-                f"📰 Gefundener Artikel: {title}"
-            )
-
-            print(
-                f"🔗 {link}"
-            )
-
-            return link
-
-        except Exception:
-            pass
-
-    return None
-
-
-# ---------------------------------------------------------
-# DATUM ERKENNEN
-# ---------------------------------------------------------
-
-def detect_date(lines):
-
-    date_pattern = re.compile(
-        r"\b\d{1,2}\.\s+"
-        r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|"
-        r"Oktober|November|Dezember)"
-        r"\s+\d{4}\b",
-        re.IGNORECASE
-    )
-
-    for line in lines:
-
-        match = date_pattern.search(line)
-
-        if match:
-            return match.group(0)
-
-    return ""
-
-
-# ---------------------------------------------------------
-# EVENTZEITRAUM ERKENNEN
-# ---------------------------------------------------------
-
-def detect_event_period(text):
+def detect_period(text):
 
     patterns = [
 
-        r"\b\d{1,2}\.\s*[–-]\s*\d{1,2}\.\s*"
-        r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|"
-        r"Oktober|November|Dezember)\b",
+        # Beispiel:
+        # September 10 - September 16
+        r"\b("
+        r"January|February|March|April|May|June|July|August|"
+        r"September|October|November|December"
+        r")\s+\d{1,2}"
+        r"\s*[-–]\s*"
+        r"("
+        r"January|February|March|April|May|June|July|August|"
+        r"September|October|November|December"
+        r")\s+\d{1,2}\b",
 
-        r"\b\d{1,2}\.\s*bis\s*\d{1,2}\.\s*"
-        r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|"
-        r"Oktober|November|Dezember)\b"
+        # Beispiel:
+        # September 10 - 16
+        r"\b("
+        r"January|February|March|April|May|June|July|August|"
+        r"September|October|November|December"
+        r")\s+\d{1,2}"
+        r"\s*[-–]\s*\d{1,2}\b"
     ]
 
     for pattern in patterns:
@@ -250,205 +90,141 @@ def detect_event_period(text):
         )
 
         if match:
-            return match.group(0)
+            return clean_text(
+                match.group(0)
+            )
 
     return ""
 
 
-# ---------------------------------------------------------
-# BEREICHE ERKENNEN
-# ---------------------------------------------------------
+# =========================================================
+# TITEL DES WOCHENARTIKELS FINDEN
+# =========================================================
 
-def classify_section(heading, text):
+async def find_weekly_title(page):
 
-    combined = (
-        heading + " " + text
-    ).lower()
-
-
-    # BONI
-    bonus_keywords = [
-        "bonus",
-        "boni",
-        "belohnungen",
-        "doppelte belohnungen",
-        "dreifache belohnungen",
-        "2x",
-        "3x",
-        "doppelte gta$",
-        "dreifache gta$",
-        "doppelte rp",
-        "dreifache rp",
-        "gta$ und rp",
-        "gta$ & rp",
-        "mehr gta$",
-        "mehr rp"
+    selectors = [
+        "h1",
+        "h2",
+        "h3"
     ]
 
-    if any(
-        keyword in combined
-        for keyword in bonus_keywords
-    ):
-        return "money"
+    candidates = []
 
+    for selector in selectors:
 
-    # KOSTENLOSE SACHEN
-    free_keywords = [
-        "kostenlos",
-        "kostenlose",
-        "kostenlosen",
-        "kostenlosen gegenstand",
-        "kostenfreien",
-        "kostenfrei",
-        "gratis",
-        "geschenk",
-        "geschenke",
-        "gratis erhalten"
+        elements = await page.locator(
+            selector
+        ).all()
+
+        for element in elements:
+
+            try:
+
+                text = clean_text(
+                    await element.inner_text()
+                )
+
+                if not text:
+                    continue
+
+                candidates.append(text)
+
+            except Exception:
+                pass
+
+    candidates = unique_items(
+        candidates
+    )
+
+    # Bevorzugt Titel mit typischen
+    # Weekly-Update-Begriffen.
+    keywords = [
+        "weekly update",
+        "weekly bonuses",
+        "bonuses",
+        "discounts",
+        "gta online"
     ]
 
-    if any(
-        keyword in combined
-        for keyword in free_keywords
-    ):
-        return "free"
+    for candidate in candidates:
+
+        lower = candidate.lower()
+
+        if any(
+            keyword in lower
+            for keyword in keywords
+        ):
+            return candidate
+
+    if candidates:
+        return candidates[0]
+
+    return ""
 
 
-    # FAHRZEUGE
-    vehicle_keywords = [
-        "fahrzeug",
-        "fahrzeuge",
-        "neues fahrzeug",
-        "auto",
-        "wagen",
-        "motorrad",
-        "motorräder",
-        "suv",
-        "sportwagen",
-        "supersportwagen",
-        "muscle-car",
-        "muscle car"
-    ]
+# =========================================================
+# RELEVANTE ABSCHNITTE AUSLESEN
+# =========================================================
 
-    if any(
-        keyword in combined
-        for keyword in vehicle_keywords
-    ):
-        return "vehicles"
+async def read_sections(page):
 
-
-    # RABATTE
-    discount_keywords = [
-        "rabatt",
-        "rabatte",
-        "reduziert",
-        "preisnachlass",
-        "vergünstigt",
-        "vergünstigungen",
-        "% günstiger",
-        "günstiger",
-        "nachlass"
-    ]
-
-    if any(
-        keyword in combined
-        for keyword in discount_keywords
-    ):
-        return "discounts"
-
-
-    return "other"
-
-
-# ---------------------------------------------------------
-# ARTIKEL AUSLESEN
-# ---------------------------------------------------------
-
-async def read_article(page, article_url):
-
-    print(
-        "📖 Öffne Rockstar-Artikel..."
-    )
-
-    await page.goto(
-        article_url,
-        wait_until="domcontentloaded",
-        timeout=60000
-    )
-
-    await page.wait_for_timeout(
-        5000
-    )
-
-    await accept_cookies(page)
-
-    await page.wait_for_timeout(
-        2000
-    )
-
-
-    # TITEL
-    title = ""
-
-    title_locator = page.locator(
-        "h1"
-    )
-
-    if await title_locator.count() > 0:
-
-        title = clean_text(
-            await title_locator.first.inner_text()
-        )
-
-
-    # GESAMTEN TEXT
-    body_text = await page.locator(
-        "body"
-    ).inner_text()
-
-
-    lines = [
-        clean_text(line)
-        for line in body_text.splitlines()
-        if clean_text(line)
-    ]
-
-
-    date = detect_date(
-        lines
-    )
-
-
-    event_period = detect_event_period(
-        body_text
-    )
-
-
-    # ABSCHNITTE
     sections = []
 
-    heading_elements = await page.locator(
-        "h2, h3"
+    headings = await page.locator(
+        "h1, h2, h3, h4"
     ).all()
 
-
-    for heading_element in heading_elements:
+    for heading in headings:
 
         try:
 
-            heading = clean_text(
-                await heading_element.inner_text()
+            heading_text = clean_text(
+                await heading.inner_text()
             )
 
-            if not heading:
+            if not heading_text:
                 continue
 
+            heading_lower = (
+                heading_text.lower()
+            )
 
-            text_parts = []
+            # Nur interessante Bereiche
+            interesting_keywords = [
+                "bonus",
+                "bonuses",
+                "reward",
+                "rewards",
+                "discount",
+                "discounts",
+                "vehicle",
+                "vehicles",
+                "showroom",
+                "luxury autos",
+                "premium deluxe",
+                "podium",
+                "prize ride",
+                "weekly challenge",
+                "free",
+                "free item",
+                "gta+",
+                "event"
+            ]
 
-            current = heading_element
+            if not any(
+                keyword in heading_lower
+                for keyword in interesting_keywords
+            ):
+                continue
 
+            texts = []
 
-            for _ in range(15):
+            current = heading
+
+            # Die nächsten Elemente nach
+            # der Überschrift untersuchen.
+            for _ in range(20):
 
                 current = current.locator(
                     "xpath=following-sibling::*[1]"
@@ -457,21 +233,20 @@ async def read_article(page, article_url):
                 if await current.count() == 0:
                     break
 
-
-                tag_name = await current.evaluate(
+                tag = await current.evaluate(
                     "(element) => "
                     "element.tagName.toLowerCase()"
                 )
 
-
-                if tag_name in (
+                if tag in (
+                    "h1",
                     "h2",
-                    "h3"
+                    "h3",
+                    "h4"
                 ):
                     break
 
-
-                if tag_name in (
+                if tag in (
                     "p",
                     "li"
                 ):
@@ -481,449 +256,69 @@ async def read_article(page, article_url):
                     )
 
                     if text:
-                        text_parts.append(
-                            text
-                        )
+                        texts.append(text)
 
-
-            section_text = clean_text(
-                " ".join(text_parts)
+            texts = unique_items(
+                texts
             )
 
-
-            if (
-                section_text
-                or len(heading) > 3
-            ):
+            if texts:
 
                 sections.append({
-                    "heading": heading,
-                    "text": section_text
+                    "heading": heading_text,
+                    "items": texts
                 })
-
 
         except Exception:
             pass
 
-
-    # FALLBACK
-    if not sections:
-
-        paragraphs = await page.locator(
-            "p"
-        ).all_inner_texts()
+    return sections
 
 
-        clean_paragraphs = unique_items(
-            paragraphs
-        )
+# =========================================================
+# FALLBACK: LISTEN UND TABELLEN
+# =========================================================
 
+async def read_lists(page):
 
-        for paragraph in clean_paragraphs:
+    results = []
 
-            if len(paragraph) >= 40:
+    elements = await page.locator(
+        "li, td"
+    ).all()
 
-                sections.append({
-                    "heading": "",
-                    "text": paragraph
-                })
+    for element in elements:
 
+        try:
 
-    print(
-        f"✅ Artikel ausgelesen: {title}"
-    )
-
-    return {
-        "title": title,
-        "date": date,
-        "event_period": event_period,
-        "sections": sections,
-        "url": article_url
-    }
-
-
-# ---------------------------------------------------------
-# ARTIKEL KATEGORISIEREN
-# ---------------------------------------------------------
-
-def classify_article(article):
-
-    results = {
-        "money": [],
-        "free": [],
-        "vehicles": [],
-        "discounts": [],
-        "other": []
-    }
-
-
-    for section in article["sections"]:
-
-        category = classify_section(
-            section["heading"],
-            section["text"]
-        )
-
-        results[category].append(
-            section
-        )
-
-
-    return results
-
-
-# ---------------------------------------------------------
-# TEXT FÜR EINEN BEREICH
-# ---------------------------------------------------------
-
-def format_section(section):
-
-    heading = clean_text(
-        section.get(
-            "heading",
-            ""
-        )
-    )
-
-    text = clean_text(
-        section.get(
-            "text",
-            ""
-        )
-    )
-
-
-    if heading and text:
-
-        return (
-            f"**{heading}**\n"
-            f"{text}"
-        )
-
-
-    if heading:
-        return (
-            f"**{heading}**"
-        )
-
-
-    return text
-
-
-# ---------------------------------------------------------
-# KATEGORIE HINZUFÜGEN
-# ---------------------------------------------------------
-
-def add_category(
-    message,
-    emoji,
-    title,
-    items,
-    max_items=5
-):
-
-    if not items:
-        return message
-
-
-    message += (
-        f"### {emoji} {title}\n\n"
-    )
-
-
-    added = 0
-
-
-    for item in items:
-
-        formatted = format_section(
-            item
-        )
-
-
-        if not formatted:
-            continue
-
-
-        if len(formatted) > 500:
-
-            formatted = (
-                formatted[:497]
-                + "..."
+            text = clean_text(
+                await element.inner_text()
             )
 
+            if not text:
+                continue
 
-        message += (
-            f"• {formatted}\n"
-        )
+            if len(text) < 3:
+                continue
 
+            if len(text) > 300:
+                continue
 
-        added += 1
+            results.append(text)
 
+        except Exception:
+            pass
 
-        if added >= max_items:
-            break
-
-
-    message += "\n"
-
-    return message
-
-
-# ---------------------------------------------------------
-# ZEITUNGSARTIKEL ERSTELLEN
-# ---------------------------------------------------------
-
-def build_message(article):
-
-    matches = classify_article(
-        article
+    return unique_items(
+        results
     )
 
 
-    title = article["title"]
-
-
-    if not title:
-        title = "GTA Online Eventwoche"
-
-
-    # -----------------------------------------------------
-    # KOPFZEILE
-    # -----------------------------------------------------
-
-    message = (
-        "# 🗞️ LS-INSIDER\n\n"
-        "## DIESE WOCHE IN LOS SANTOS\n\n"
-    )
-
-
-    # DATUM / ZEITRAUM
-
-    if article["event_period"]:
-
-        message += (
-            f"**{article['event_period']}**\n\n"
-        )
-
-    elif article["date"]:
-
-        message += (
-            f"**{article['date']}**\n\n"
-        )
-
-
-    # -----------------------------------------------------
-    # HAUPTÜBERSCHRIFT
-    # -----------------------------------------------------
-
-    message += (
-        f"### {title}\n\n"
-    )
-
-
-    # -----------------------------------------------------
-    # EINLEITUNG
-    # -----------------------------------------------------
-
-    intro = ""
-
-
-    for section in article["sections"]:
-
-        if not section["text"]:
-            continue
-
-
-        category = classify_section(
-            section["heading"],
-            section["text"]
-        )
-
-
-        if category == "other":
-
-            intro = section["text"]
-
-            break
-
-
-    if intro:
-
-        if len(intro) > 450:
-
-            intro = (
-                intro[:447]
-                + "..."
-            )
-
-
-        message += (
-            f"{intro}\n\n"
-        )
-
-
-    # -----------------------------------------------------
-    # BONI
-    # -----------------------------------------------------
-
-    message = add_category(
-        message,
-        "💰",
-        "DAS GROSSE GESCHÄFT",
-        matches["money"],
-        5
-    )
-
-
-    # -----------------------------------------------------
-    # FAHRZEUGE
-    # -----------------------------------------------------
-
-    message = add_category(
-        message,
-        "🚗",
-        "NEU AUF DEN STRASSEN",
-        matches["vehicles"],
-        5
-    )
-
-
-    # -----------------------------------------------------
-    # RABATTE
-    # -----------------------------------------------------
-
-    message = add_category(
-        message,
-        "🏷️",
-        "SONDERANGEBOTE",
-        matches["discounts"],
-        5
-    )
-
-
-    # -----------------------------------------------------
-    # KOSTENLOSE SACHEN
-    # -----------------------------------------------------
-
-    message = add_category(
-        message,
-        "🎁",
-        "GESCHENKE FÜR DIE COMMUNITY",
-        matches["free"],
-        5
-    )
-
-
-    # -----------------------------------------------------
-    # WEITERE HIGHLIGHTS
-    # -----------------------------------------------------
-
-    ignored_headings = [
-        "rockstar games",
-        "gta online",
-        "mehr erfahren",
-        "mehr",
-        "newsletter",
-        "social media",
-        "related articles"
-    ]
-
-
-    other_items = []
-
-
-    for item in matches["other"]:
-
-        heading = clean_text(
-            item.get(
-                "heading",
-                ""
-            )
-        )
-
-
-        if not heading:
-            continue
-
-
-        if heading.lower() in ignored_headings:
-            continue
-
-
-        if heading in other_items:
-            continue
-
-
-        other_items.append(
-            heading
-        )
-
-
-    if other_items:
-
-        message += (
-            "### 📰 WEITERE NEWS\n\n"
-        )
-
-
-        for heading in other_items[:4]:
-
-            message += (
-                f"• {heading}\n"
-            )
-
-
-        message += "\n"
-
-
-    # -----------------------------------------------------
-    # QUELLE
-    # -----------------------------------------------------
-
-    message += (
-        "**Quelle:** Rockstar Games Newswire\n"
-        "🔗 Vollständigen Artikel lesen:\n"
-        f"{article['url']}"
-    )
-
-
-    # -----------------------------------------------------
-    # DISCORD-LIMIT
-    # -----------------------------------------------------
-
-    if len(message) > DISCORD_LIMIT:
-
-        link = (
-            "\n\n"
-            "**Quelle:** Rockstar Games Newswire\n"
-            "🔗 Vollständigen Artikel lesen:\n"
-            + article["url"]
-        )
-
-
-        available = (
-            DISCORD_LIMIT
-            - len(link)
-            - 20
-        )
-
-
-        message = (
-            message[:available]
-            + "\n\n..."
-            + link
-        )
-
-
-    return message
-
-
-# ---------------------------------------------------------
-# ROCKSTAR NEWS ABRUFEN
-# ---------------------------------------------------------
-
-async def get_latest_news():
+# =========================================================
+# GTABASE AUSLESEN
+# =========================================================
+
+async def get_gtabase_data():
 
     async with async_playwright() as p:
 
@@ -931,198 +326,195 @@ async def get_latest_news():
             headless=True
         )
 
-
         page = await browser.new_page(
-            locale="de-DE"
+            locale="en-US"
         )
-
 
         try:
 
+            print("")
+            print("=" * 60)
+            print("🌐 LS-INSIDER GTABASE-TEST")
+            print("=" * 60)
+
+            print("")
             print(
-                "🌐 Öffne Rockstar Newswire..."
+                "🔎 Öffne GTABase..."
             )
 
-
             await page.goto(
-                ROCKSTAR_URL,
+                GTABASE_URL,
                 wait_until="domcontentloaded",
                 timeout=60000
             )
 
-
             await page.wait_for_timeout(
-                3000
+                5000
             )
 
+            print(
+                f"✅ Seite geladen: "
+                f"{page.url}"
+            )
 
-            await accept_cookies(
+            # -------------------------------------------------
+            # TITEL
+            # -------------------------------------------------
+
+            title = await find_weekly_title(
                 page
             )
 
-
-            await page.wait_for_timeout(
-                2000
+            print("")
+            print(
+                f"📰 Titel: {title}"
             )
 
+            # -------------------------------------------------
+            # GESAMTEN TEXT
+            # -------------------------------------------------
 
-            article_url = (
-                await find_latest_gta_article(
-                    page
-                )
+            body_text = clean_text(
+                await page.locator(
+                    "body"
+                ).inner_text()
             )
 
+            print(
+                f"📄 Seiteninhalt: "
+                f"{len(body_text)} Zeichen"
+            )
 
-            if not article_url:
+            # -------------------------------------------------
+            # ZEITRAUM
+            # -------------------------------------------------
+
+            period = detect_period(
+                body_text
+            )
+
+            print(
+                f"📅 Erkannter Zeitraum: "
+                f"{period or 'NICHT GEFUNDEN'}"
+            )
+
+            # -------------------------------------------------
+            # ABSCHNITTE
+            # -------------------------------------------------
+
+            sections = await read_sections(
+                page
+            )
+
+            print_section(
+                "📊 GEFUNDENE WOCHEN-BEREICHE",
+                []
+            )
+
+            if sections:
+
+                for section in sections:
+
+                    print("")
+                    print(
+                        f"### {section['heading']}"
+                    )
+
+                    for item in section["items"]:
+                        print(
+                            f"• {item}"
+                        )
+
+            else:
 
                 print(
-                    "⚠️ Kein aktueller "
-                    "GTA-Online-Artikel gefunden."
+                    "Keine passenden Bereiche "
+                    "über Überschriften gefunden."
                 )
 
-                return None
+            # -------------------------------------------------
+            # FALLBACK-LISTEN
+            # -------------------------------------------------
 
-
-            article = await read_article(
-                page,
-                article_url
+            lists = await read_lists(
+                page
             )
 
+            print_section(
+                "📋 GEFUNDENE LISTEN-/TABELLENINHALTE",
+                lists[:80]
+            )
 
-            return article
+            # -------------------------------------------------
+            # TESTERGEBNIS
+            # -------------------------------------------------
 
+            print("")
+            print("=" * 60)
+            print("🏁 GTABASE-TEST ABGESCHLOSSEN")
+            print("=" * 60)
+
+            print("")
+            print(
+                "Discord wurde NICHT angesprochen."
+            )
+
+            print(
+                "last_article.txt wurde NICHT verändert."
+            )
+
+            print("")
+            print(
+                "Wenn hier die aktuellen "
+                "Wocheninformationen erscheinen,"
+            )
+
+            print(
+                "können wir daraus den echten "
+                "Mittwoch-Bot bauen."
+            )
+
+            return True
 
         finally:
 
             await browser.close()
 
 
-# ---------------------------------------------------------
+# =========================================================
 # HAUPTPROGRAMM
-# ---------------------------------------------------------
+# =========================================================
 
 async def main():
 
     try:
 
-        print(
-            "======================================"
-        )
+        success = await get_gtabase_data()
 
-        print(
-            "🚗 LS-INSIDER STARTET"
-        )
+        if success:
 
-        print(
-            "======================================"
-        )
-
-
-        print(
-            "🔎 Suche nach aktuellem "
-            "GTA-Online-Artikel..."
-        )
-
-
-        article = await get_latest_news()
-
-
-        if not article:
-
+            print("")
             print(
-                "❌ Kein Artikel gefunden."
+                "✅ TEST ERFOLGREICH BEENDET"
             )
-
-            return
-
-
-        article_url = article["url"]
-
-
-        print(
-            f"📰 Aktueller Artikel:\n"
-            f"{article_url}"
-        )
-
-
-        # -------------------------------------------------
-        # DOPPELTEN ARTIKEL PRÜFEN
-        # -------------------------------------------------
-
-        last_article = load_last_article()
-
-
-        if article_url == last_article:
-
-            print(
-                "⏭️ Dieser Artikel wurde "
-                "bereits gepostet."
-            )
-
-            print(
-                "🚫 Keine neue Discord-Nachricht."
-            )
-
-            return
-
-
-        # -------------------------------------------------
-        # NACHRICHT ERSTELLEN
-        # -------------------------------------------------
-
-        message = build_message(
-            article
-        )
-
-
-        print(
-            "📝 Zeitungsartikel erstellt."
-        )
-
-
-        # -------------------------------------------------
-        # DISCORD
-        # -------------------------------------------------
-
-        send_to_discord(
-            message
-        )
-
-
-        # -------------------------------------------------
-        # ARTIKEL SPEICHERN
-        # -------------------------------------------------
-
-        save_last_article(
-            article_url
-        )
-
-
-        print(
-            "======================================"
-        )
-
-        print(
-            "✅ LS-INSIDER ERFOLGREICH GESENDET"
-        )
-
-        print(
-            "======================================"
-        )
-
 
     except Exception as error:
 
+        print("")
         print(
-            f"❌ FEHLER: {error}"
+            "❌ FEHLER BEIM GTABASE-TEST:"
+        )
+
+        print(
+            error
         )
 
         raise
 
 
-# ---------------------------------------------------------
+# =========================================================
 # START
-# ---------------------------------------------------------
+# =========================================================
 
 if __name__ == "__main__":
 
