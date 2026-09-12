@@ -486,6 +486,13 @@ def parse_rotating(lines):
         "share", "discover more", "unlock game guides", "more from us", "related articles",
         "comments", "comment", "advertisement", "advertisements", "thanks for your support",
     }
+    stop_phrases = (
+        "this article has been viewed",
+        "thanks for your support",
+        "share discover more",
+        "unlock game guides",
+        "this article has been viewed ",
+    )
     groups = []
     current = None
     bucket = []
@@ -503,6 +510,9 @@ def parse_rotating(lines):
             continue
         normalized = normalized_heading(line)
         low = normalized.casefold()
+        if any(phrase in low for phrase in stop_phrases):
+            flush()
+            break
         if low in stop_words:
             flush()
             continue
@@ -586,43 +596,49 @@ def parse_gun_van(lines):
 def parse_gta_plus_benefits(text):
     if not text:
         return []
+
     lines = text_lines(text)
     blob = " ".join(lines).casefold()
     if "gta+" not in blob and "gta +" not in blob:
         return []
 
     result = []
+
+    def has(*terms):
+        return all(term.casefold() in blob for term in terms)
+
     rules = [
-        ("pegassi horus" in blob and "early access" in blob,
+        (has("pegassi horus") and has("early access"),
          "Pegassi Horus: 1 Woche Early Access für GTA+ Mitglieder; kostenlos beim Vinewood Car Club mit exklusiver Velvet-Iris-Lackierung."),
-        ("chameleon" in blob and ("free" in blob or "kostenlos" in blob),
-         "Zwei kostenlose Chameleon-Lackierungen: Cyan/Red Flip Chameleon Paint und passende Wheel Paint."),
+        (("chameleon" in blob or "chamäleon" in blob) and ("free" in blob or "kostenlos" in blob),
+         "Kostenlose Chameleon-Lackierungen und passende Chameleon-Felgenfarbe."),
         ("bigness" in blob and ("clothing" in blob or "kleidung" in blob),
-         "Kostenlose Bigness-Kleidung: Bigness Patchwork Revere Collar Shirt und Bigness Patchwork Jeans."),
-        ("cluckin' bell farm raid" in blob and ("2x gta$" in blob or "double gta$" in blob),
-         "2X GTA$ für den ersten wöchentlichen Abschluss des Finales von Scene of the Crime im Cluckin' Bell Farm Raid."),
-        ("60% off biker" in blob or "60% off biker businesses" in blob or "60% rabatt auf biker" in blob,
-         "60% Rabatt auf Biker-Unternehmen, Upgrades und Anpassungen für GTA+ Mitglieder."),
-        ("cocaine production" in blob and "doubled" in blob,
+         "Kostenlose Bigness-Kleidung."),
+        (("cluckin' bell" in blob or "cluckin bell" in blob) and ("2x gta$" in blob or "double gta$" in blob),
+         "2X GTA$ für den ersten wöchentlichen Abschluss des Cluckin' Bell Farm Raid."),
+        ("60% off" in blob and "biker" in blob,
+         "60% Rabatt auf Biker-Unternehmen sowie deren Upgrades und Anpassungen für GTA+ Mitglieder."),
+        (("cocaine" in blob or "kokain" in blob) and ("doubled" in blob or "double" in blob or "doppelte" in blob),
          "Doppelte Produktionsgeschwindigkeit für Kokain-Betriebe von GTA+ Mitgliedern."),
-        ("3x gta$ and rp" in blob and "bike service" in blob,
+        ("3x gta$" in blob and "bike service" in blob,
          "3X GTA$ und RP für Bike-Service-Arbeiten im Motorrad-Tuningbereich des Clubhauses."),
-        ("50% off all nagasaki motorcycles" in blob or "50% rabatt" in blob and "nagasaki" in blob,
-         "50% Rabatt auf alle Nagasaki-Motorräder im Rahmen der GTA+-Aktion."),
-        ("gta$500,000" in blob or "500,000 gta$" in blob,
-         "GTA$500.000 werden GTA+ Mitgliedern monatlich zum Abrechnungszeitpunkt automatisch gutgeschrieben."),
-        ((("15% bonus gta$" in blob) or ("15% gta$ bonus" in blob)) and "shark cards" in blob,
+        ("50% off" in blob and "nagasaki" in blob,
+         "50% Rabatt auf alle Nagasaki-Motorräder."),
+        (("gta$500,000" in blob or "500,000 gta$" in blob) and ("monthly" in blob or "monat" in blob),
+         "GTA$500.000 werden GTA+ Mitgliedern monatlich automatisch gutgeschrieben."),
+        ("15%" in blob and ("cash card" in blob or "cashcard" in blob or "shark card" in blob),
          "Spezielle GTA+ CashCards bieten 15% Bonus-GTA$."),
         ("vinewood club app" in blob,
-         "Die Vinewood Club App bietet zusätzliche Funktionen zur Verwaltung von Geschäften, Einnahmen und Fahrzeugen."),
-        ("games library" in blob,
-         "Zugang zur wechselnden GTA+ Games Library, solange die jeweiligen Spiele verfügbar sind."),
+         "Zugang zur Vinewood Club App als Teil der GTA+ Vorteile."),
+        ("games library" in blob or "gta+ games library" in blob,
+         "Zugang zur wechselnden GTA+ Games Library."),
     ]
+
     for condition, message in rules:
         if condition:
             result.append(message)
-    return unique(result)
 
+    return unique(result)
 
 def sort_discount_groups(groups):
     def sort_key(entry):
@@ -701,7 +717,7 @@ def known_concepts_from_wednesday(data):
             concepts.add("reward")
         if any(x in low for x in ("bigness", "tee", "cap", "kleidung")):
             concepts.add("clothing")
-        if any(x in low for x in ("biker-boni", "biker bonuses", "biker bonus")):
+        if any(x in low for x in ("biker-boni", "biker bonuses", "biker bonus", "biker", "biker-unternehmen")):
             concepts.add("biker")
         if "chameleon" in low:
             concepts.add("chameleon")
@@ -819,19 +835,53 @@ async def fetch_igta_gta_plus():
         print(f"iGTA: GTA+-Listing nicht abrufbar: {exc}")
         return "", ""
 
-    candidates = re.findall(
-        r"https://www\.igrandtheftauto\.com/gtaonline/news/[^\s\"<>]*",
+    candidates = unique(re.findall(
+        r"https://www\.igrandtheftauto\.com/gtaonline/news/[^\s\"<>]+",
         listing_html or "",
         flags=re.I,
-    )
-    for url in unique(candidates):
+    ))
+
+    scored = []
+    for url in candidates:
         low = url.casefold()
-        if any(x in low for x in ("pegassi-horus", "gta-members", "gta-plus", "early-access")):
-            try:
-                text, _ = await fetch_page(url, wait_ms=3000)
-                return text, url
-            except Exception as exc:
-                print(f"iGTA: GTA+-Artikel fehlgeschlagen: {exc}")
+        score = 0
+        if "gta-members" in low:
+            score += 10
+        if "pegassi-horus" in low:
+            score += 10
+        if "early-access" in low:
+            score += 8
+        if "gta-plus" in low:
+            score += 6
+        if score:
+            scored.append((score, url))
+
+    scored.sort(reverse=True)
+    best_text = ""
+    best_url = ""
+    best_score = -1
+
+    for base_score, url in scored[:8]:
+        try:
+            text, _ = await fetch_page(url, wait_ms=3000)
+            low = text.casefold()
+            relevance = base_score
+            if "gta+" in low or "gta plus" in low:
+                relevance += 5
+            if "pegassi horus" in low:
+                relevance += 8
+            if len(text) > 1200:
+                relevance += 3
+            if relevance > best_score:
+                best_score = relevance
+                best_text = text
+                best_url = url
+        except Exception as exc:
+            print(f"iGTA: GTA+-Artikel fehlgeschlagen: {url} | {exc}")
+
+    if best_text:
+        return best_text, best_url
+
     return listing_text, ""
 
 
@@ -904,6 +954,8 @@ def isolate_rockstar_article(text, title):
         low = line.casefold()
         if low in {"more from us", "related articles", "comments", "kommentare", "newsletter", "sign up", "share", "discover more", "unlock game guides"}:
             break
+        if any(phrase in low for phrase in ("this article has been viewed", "thanks for your support")):
+            break
         if low in ROCKSTAR_NOISE:
             continue
         if low.startswith("newswiregta online") or low.startswith("gta onlineinhalts"):
@@ -965,13 +1017,27 @@ def filter_new_rockstar_facts(candidates, known_concepts, known_facts):
         key = re.sub(r"\s+", " ", clean(fact)).casefold()
         if key in known_fact_keys:
             continue
+
         tags = concept_tags(fact)
         specific = tags - {"vehicle", "bonus", "reward", "clothing"}
-        if specific and specific.intersection(known_concepts):
+
+        # Wenn ein Rockstar-Satz ausschließlich ein Thema beschreibt, das
+        # am Mittwoch bereits vollständig bekannt war, gilt er nicht als neu.
+        if specific and specific.issubset(known_concepts):
             continue
+
+        # Besonders wichtig für GTA+-/Fahrzeug-Artikel: Derselbe konkrete
+        # Gegenstand soll nicht allein wegen einer anders formulierten
+        # Zusammenfassung am Donnerstag erneut gemeldet werden.
+        low = fact.casefold()
+        if "pegassi horus" in low and "horus" in known_concepts:
+            continue
+        if "gta+" in low and "gta_plus" in known_concepts and not re.search(r"\b(?:new|neu|changed|geändert|updated|\d+%)\b", low):
+            if any(k in low for k in ("early access", "vorabzugang", "bigness", "chameleon", "chamäleon", "biker", "gta$500,000", "500,000 gta$")):
+                continue
+
         out.append(fact)
     return out
-
 
 def classify_rockstar(title, facts):
     fact_blob = " ".join(facts).casefold()
@@ -1101,7 +1167,7 @@ async def run_wednesday():
     period_key = f"{data['period'][0]:%Y-%m-%d}_{data['period'][1]:%Y-%m-%d}"
     if not TEST_MODE and state.get("wednesday_period") == period_key:
         print(f"Mittwoch bereits veröffentlicht: {period_key}")
-        return
+        return data
 
     post_to_discord(messages)
     if not TEST_MODE:
@@ -1111,13 +1177,19 @@ async def run_wednesday():
         state["wednesday_plus_url"] = gta_plus_url
         save_state(state)
 
+    return data
 
-async def run_thursday():
+
+async def run_thursday(known_data=None):
     print("\nLS-INSIDER – DONNERSTAG / GEHEIMBERICHT")
     article = await fetch_rockstar_news()
     state = load_state()
-    known_concepts = set(state.get("wednesday_concepts", []))
-    known_facts = state.get("wednesday_facts", [])
+    if known_data is not None:
+        known_concepts = known_concepts_from_wednesday(known_data)
+        known_facts = wednesday_facts(known_data)
+    else:
+        known_concepts = set(state.get("wednesday_concepts", []))
+        known_facts = state.get("wednesday_facts", [])
 
     candidates = rockstar_candidates(article["title"], article["body"])
     new_facts = filter_new_rockstar_facts(candidates, known_concepts, known_facts)
@@ -1338,8 +1410,8 @@ async def main():
     weekday = now.weekday()
 
     if event == "workflow_dispatch" and TEST_MODE:
-        await run_wednesday()
-        await run_thursday()
+        wednesday_data = await run_wednesday()
+        await run_thursday(known_data=wednesday_data)
     elif weekday == 2:
         await run_wednesday()
     elif weekday == 3:
