@@ -282,6 +282,7 @@ def translate_bonus(line: str):
         (r"Community Mission Series", "Community-Missionsserie"),
         (r"Featured Series", "Featured Series"),
         (r"\band\b", "und"),
+        (r"\bon\b", "für"),
         (r"for GTA\+ Members", "für GTA+ Mitglieder"),
     ]
     for pattern, repl in replacements:
@@ -475,12 +476,15 @@ def parse_challenges(lines):
 
 
 def parse_rotating(lines):
-    """Parses the weekly rotating-content block into three stable groups."""
     headings = {
         "the kortz center heist primary targets": "Kortz Center Heist – Hauptziele",
         "the kortz center heist primary target": "Kortz Center Heist – Hauptziele",
         "fib priority file": "FIB Priority File",
         "salvage yard robbery targets": "Salvage Yard – Raubziele",
+    }
+    stop_words = {
+        "share", "discover more", "unlock game guides", "more from us", "related articles",
+        "comments", "comment", "advertisement", "advertisements", "thanks for your support",
     }
     groups = []
     current = None
@@ -498,37 +502,31 @@ def parse_rotating(lines):
         if not line:
             continue
         normalized = normalized_heading(line)
+        low = normalized.casefold()
+        if low in stop_words:
+            flush()
+            continue
 
-        # iGTA uses h3 headings for these sub-sections. text_lines() has already
-        # removed the markdown/HTML heading marker, so compare normalized text.
         heading = None
         for needle, label in headings.items():
-            if normalized == needle or normalized.startswith(needle + " "):
+            if low == needle or low.startswith(needle + " "):
                 heading = label
                 break
-
         if heading:
             flush()
             current = heading
             continue
 
-        low = line.casefold()
-        if low in {
-            "i hear voices", "i, fruit", "until death", "the black box file"
-        } or low.startswith("the gangbanger robbery:") \
-           or low.startswith("the cargo ship robbery:") \
-           or low.startswith("the mctony robbery:"):
-            bucket.append(translate_rotating_line(line))
-            continue
-
-        # Keep additional meaningful targets belonging to the current group.
-        if current and len(line) >= 4 and not any(marker in low for marker in (
-            "advertisement", "copyright", "comment", "thanks for your support"
-        )):
+        if current and len(line) >= 3:
+            if any(x in low for x in ("newswire", "gta online", "inhalts-updates")):
+                continue
+            if line.startswith("#"):
+                continue
             bucket.append(translate_rotating_line(line))
 
     flush()
     return unique(groups)
+
 
 def translate_rotating_line(line):
     result = clean(line)
@@ -544,57 +542,45 @@ def translate_rotating_line(line):
 
 
 def parse_gun_van(lines):
-    """Parses the complete Gun Van inventory.
-
-    Discounted items are grouped from highest to lowest discount, with free
-    items first. Items without a discount remain in a final INVENTAR group so
-    that nothing from the Gun Van section is silently dropped.
-    """
-    groups = {}
-    regular = []
+    discounts = {}
+    inventory = []
 
     for raw in lines:
         line = clean(raw)
         if not line:
             continue
-        low = line.casefold()
-        if low in {"gun van inventory", "gun van", "inventory", "stock"}:
-            continue
-        if low.startswith("gun van inventory"):
-            line = re.sub(r"^gun van inventory\s*[:：]?\s*", "", line, flags=re.I)
-            if not line:
-                continue
 
-        free = bool(re.search(r"(?:-|–|—|:)\s*free\.?$", line, re.I)) or bool(
-            re.search(r"\bfree\b", line, re.I) and not re.search(r"for gta\+", line, re.I)
-        )
-        percent_match = re.search(r"(\d{1,3})\s*%\s*(?:off|discount|rabatt)?", line, re.I)
-
-        if free:
-            item = re.sub(r"\s*(?:-|–|—|:)\s*free\.?$", "", line, flags=re.I)
-            item = re.sub(r"\bfree\b", "", item, flags=re.I).strip(" -–—:")
+        # Free Gun Van entries, e.g. "Item – Free"
+        free_match = re.search(r"^(.*?)\s*[–—-]\s*free\.?$", line, re.I)
+        if free_match:
+            item = clean(free_match.group(1))
             if item:
-                groups.setdefault(0, []).append(item)
+                discounts.setdefault(0, []).append(item)
             continue
 
-        if percent_match:
-            pct = int(percent_match.group(1))
-            item = re.sub(r"\s*(?:-|–|—|:)\s*\d{1,3}\s*%\s*(?:off|discount|rabatt)?\.?$", "", line, flags=re.I)
-            item = re.sub(r"\b\d{1,3}\s*%\s*(?:off|discount|rabatt)?\b", "", item, flags=re.I)
-            item = item.strip(" -–—:")
-            if item:
-                groups.setdefault(pct, []).append(item)
+        # Discounted Gun Van entries, e.g. "Tactical SMG – 40% off"
+        match = re.search(r"^(.*?)\s*[–—-]\s*(\d{1,3})\s*%\s*off(?:\s+for\s+GTA\+\s+Members?)?\.?$", line, re.I)
+        if match:
+            item = clean(match.group(1))
+            pct = int(match.group(2))
+            gta_plus_only = bool(re.search(r"for\s+GTA\+\s+Members?", line, re.I))
+            if gta_plus_only:
+                item += " (GTA+)"
+            discounts.setdefault(pct, []).append(item)
             continue
 
-        regular.append(line)
+        # Any clean inventory line that is not a navigation/header line.
+        if line.casefold() in {"inventory", "gun van inventory"}:
+            continue
+        if line.startswith("#"):
+            continue
+        inventory.append(line)
 
-    result = []
-    for pct in sorted(groups, key=lambda x: (x != 0, -x)):
-        label = "KOSTENLOS" if pct == 0 else f"{pct}% RABATT"
-        result.append((label, unique(groups[pct])))
-    if regular:
-        result.append(("INVENTAR", unique(regular)))
-    return result
+    ordered_discounts = []
+    for pct in sorted(discounts.keys(), reverse=True):
+        ordered_discounts.append((f"🔫 GUN VAN — {pct}% RABATT", unique(discounts[pct])))
+
+    return ordered_discounts, unique(inventory)
 
 
 def parse_gta_plus_benefits(text):
@@ -606,15 +592,50 @@ def parse_gta_plus_benefits(text):
         return []
 
     result = []
-    if "pegassi horus" in blob and "early access" in blob:
-        result.append("Pegassi Horus: 1 Woche Early Access für GTA+ Mitglieder; kostenlos beim Vinewood Car Club mit Velvet-Iris-Design.")
-    if "chameleon" in blob:
-        result.append("Kostenlose Chameleon-Lackierungen für GTA+ Mitglieder.")
-    if "bigness" in blob and "clothing" in blob:
-        result.append("Kostenlose Bigness-Kleidung.")
-    if "biker bonus" in blob or "biker bonuses" in blob:
-        result.append("Biker-Boni für GTA+ Mitglieder.")
+    rules = [
+        ("pegassi horus" in blob and "early access" in blob,
+         "Pegassi Horus: 1 Woche Early Access für GTA+ Mitglieder; kostenlos beim Vinewood Car Club mit exklusiver Velvet-Iris-Lackierung."),
+        ("chameleon" in blob and ("free" in blob or "kostenlos" in blob),
+         "Zwei kostenlose Chameleon-Lackierungen: Cyan/Red Flip Chameleon Paint und passende Wheel Paint."),
+        ("bigness" in blob and ("clothing" in blob or "kleidung" in blob),
+         "Kostenlose Bigness-Kleidung: Bigness Patchwork Revere Collar Shirt und Bigness Patchwork Jeans."),
+        ("cluckin' bell farm raid" in blob and ("2x gta$" in blob or "double gta$" in blob),
+         "2X GTA$ für den ersten wöchentlichen Abschluss des Finales von Scene of the Crime im Cluckin' Bell Farm Raid."),
+        ("60% off biker" in blob or "60% off biker businesses" in blob or "60% rabatt auf biker" in blob,
+         "60% Rabatt auf Biker-Unternehmen, Upgrades und Anpassungen für GTA+ Mitglieder."),
+        ("cocaine production" in blob and "doubled" in blob,
+         "Doppelte Produktionsgeschwindigkeit für Kokain-Betriebe von GTA+ Mitgliedern."),
+        ("3x gta$ and rp" in blob and "bike service" in blob,
+         "3X GTA$ und RP für Bike-Service-Arbeiten im Motorrad-Tuningbereich des Clubhauses."),
+        ("50% off all nagasaki motorcycles" in blob or "50% rabatt" in blob and "nagasaki" in blob,
+         "50% Rabatt auf alle Nagasaki-Motorräder im Rahmen der GTA+-Aktion."),
+        ("gta$500,000" in blob or "500,000 gta$" in blob,
+         "GTA$500.000 werden GTA+ Mitgliedern monatlich zum Abrechnungszeitpunkt automatisch gutgeschrieben."),
+        ((("15% bonus gta$" in blob) or ("15% gta$ bonus" in blob)) and "shark cards" in blob,
+         "Spezielle GTA+ CashCards bieten 15% Bonus-GTA$."),
+        ("vinewood club app" in blob,
+         "Die Vinewood Club App bietet zusätzliche Funktionen zur Verwaltung von Geschäften, Einnahmen und Fahrzeugen."),
+        ("games library" in blob,
+         "Zugang zur wechselnden GTA+ Games Library, solange die jeweiligen Spiele verfügbar sind."),
+    ]
+    for condition, message in rules:
+        if condition:
+            result.append(message)
     return unique(result)
+
+
+def sort_discount_groups(groups):
+    def sort_key(entry):
+        label, _ = entry
+        if label == "KOSTENLOS":
+            return (0, 0)
+        if "GUN VAN" in label and "KOSTENLOS" in label:
+            return (0, 1)
+        match = re.search(r"(\d{1,3})%", label)
+        pct = int(match.group(1)) if match else -1
+        return (1, -pct)
+
+    return sorted(groups, key=sort_key)
 
 
 def make_wednesday_data(weekly_text: str, gta_plus_text: str = ""):
@@ -622,33 +643,20 @@ def make_wednesday_data(weekly_text: str, gta_plus_text: str = ""):
     all_lines = text_lines(weekly_text)
     start, end = week_period()
 
+    gun_van_discount_groups, gun_van_inventory = parse_gun_van(sections.get("gunvan", []))
     data = {
         "headline": detect_event(weekly_text),
         "period": (start, end),
         "intro": extract_intro(weekly_text),
         "bonuses": parse_bonuses(sections.get("bonuses", [])),
         "vehicles": parse_vehicle_groups(sections.get("vehicles", [])),
-        "discounts": parse_discounts(sections.get("discounts", [])),
+        "discounts": sort_discount_groups(parse_discounts(sections.get("discounts", [])) + gun_van_discount_groups),
         "gifts": parse_gifts(sections, weekly_text),
         "gta_plus": parse_gta_plus_benefits(gta_plus_text),
         "challenges": parse_challenges(sections.get("challenges", [])),
         "rotating": parse_rotating(sections.get("rotating", [])),
-        "gun_van": [],
+        "gun_van": gun_van_inventory,
     }
-
-    # Manche Seiten-Versionen legen den Gun Van in einen anderen Textblock.
-    if not data["gun_van"]:
-        gun_lines = []
-        collecting = False
-        for line in all_lines:
-            if heading_kind(line) == "gunvan":
-                collecting = True
-                continue
-            if collecting and heading_kind(line):
-                break
-            if collecting:
-                gun_lines.append(line)
-        data["gun_van"] = parse_gun_van(gun_lines)
 
     core = sum(
         bool(data[key])
@@ -671,8 +679,7 @@ def wednesday_facts(data):
     for name, text in data["challenges"]:
         facts.append(f"{name}: {text}")
     facts.extend(data["rotating"])
-    for group, items in data["gun_van"]:
-        facts.extend(items)
+    facts.extend(data["gun_van"])
     return unique(facts)
 
 
@@ -712,36 +719,34 @@ def format_wednesday(data, source_url):
     ]
 
     if data["bonuses"]:
-        lines += ["", "💰 **BONI**"] + [f"• {x}" for x in data["bonuses"]]
+        lines += ["", "💰 **DIE GROSSEN GESCHÄFTE**"] + [f"• {x}" for x in data["bonuses"]]
 
     if data["vehicles"]:
-        lines += ["", "🚗 **FAHRZEUGE**"]
+        lines += ["", "🚗 **NEUES AUF DEN STRASSEN**"]
         for group, items in data["vehicles"]:
             lines.append(f"**{group}:** " + ", ".join(items))
 
     if data["discounts"]:
-        lines += ["", "🏷️ **SONDERANGEBOTE**"]
+        lines += ["", "🏷️ **LAUFENDE DEALS**"]
         for group, items in data["discounts"]:
             lines.append(f"**{group}:** " + ", ".join(items))
 
     if data["gifts"]:
-        lines += ["", "🎁 **GESCHENKE**"] + [f"• {x}" for x in data["gifts"]]
+        lines += ["", "🎁 **GESCHENKE & BEUTE**"] + [f"• {x}" for x in data["gifts"]]
 
     if data["gta_plus"]:
-        lines += ["", "⭐ **GTA+ VORTEILE**"] + [f"• {x}" for x in data["gta_plus"]]
+        lines += ["", "⭐ **DAS PLUS FÜR EUCH**"] + [f"• {x}" for x in data["gta_plus"]]
 
     if data["challenges"]:
-        lines += ["", "🏆 **WOCHENHERAUSFORDERUNGEN**"]
+        lines += ["", "🏆 **DIE WOCHENAUFTRÄGE**"]
         for name, text in data["challenges"]:
             lines.append(f"• **{name}:** {text}")
 
     if data["rotating"]:
-        lines += ["", "🔄 **ROTIERENDE INHALTE**"] + [f"• {x}" for x in data["rotating"]]
+        lines += ["", "📍 **DIESE WOCHE AKTUELL IN LOS SANTOS**"] + [f"• {x}" for x in data["rotating"]]
 
     if data["gun_van"]:
-        lines += ["", "🔫 **GUN VAN**"]
-        for group, items in data["gun_van"]:
-            lines.append(f"**{group}:** " + ", ".join(items))
+        lines += ["", "🔫 **NEUES AUS DEM GUN VAN**", "• Aktuelles Inventar: " + ", ".join(data["gun_van"])]
 
     lines += [
         "",
@@ -858,14 +863,31 @@ def clean_rockstar_lines(text):
 
 
 def find_rockstar_title(text):
-    lines = clean_rockstar_lines(text)
-    priority = []
+    lines = text_lines(text)
+    # Prefer the exact headline shape used by Rockstar.
+    preferred = []
     for line in lines:
         low = line.casefold()
-        if 30 <= len(line) <= 180 and any(x in low for x in ("gta online", "gta+", "grand theft auto online")):
-            if not low.startswith("gta online inhalts") and low != "gta online":
-                priority.append(line)
-    return max(priority, key=len) if priority else ""
+        if 25 <= len(line) <= 180 and (
+            low.startswith("gta+ members ")
+            or low.startswith("gta online ")
+            or low.startswith("compete ")
+            or low.startswith("enjoy ")
+            or low.startswith("take in ")
+            or low.startswith("declare ")
+            or low.startswith("get early access ")
+        ):
+            if low not in {"gta online", "gta online inhalts-updates"}:
+                preferred.append(line)
+    if preferred:
+        return max(preferred, key=len)
+
+    fallback = [
+        line for line in lines
+        if 30 <= len(line) <= 180 and any(x in line.casefold() for x in ("gta online", "gta+", "grand theft auto online"))
+        and line.casefold() not in {"gta online inhalts-updates", "gta online"}
+    ]
+    return max(fallback, key=len) if fallback else ""
 
 
 def isolate_rockstar_article(text, title):
@@ -880,7 +902,7 @@ def isolate_rockstar_article(text, title):
     body = []
     for line in lines[start:]:
         low = line.casefold()
-        if low in {"more from us", "related articles", "comments", "kommentare", "newsletter", "sign up"}:
+        if low in {"more from us", "related articles", "comments", "kommentare", "newsletter", "sign up", "share", "discover more", "unlock game guides"}:
             break
         if low in ROCKSTAR_NOISE:
             continue
@@ -892,21 +914,20 @@ def isolate_rockstar_article(text, title):
 
 
 def rockstar_candidates(title, body):
-    blob = " ".join(body)
-    if "pegassi horus" in title.casefold() or "pegassi horus" in blob.casefold():
-        return [
-            "GTA+ Mitglieder erhalten eine Woche frühen Zugang zum neuen Pegassi Horus Supercar.",
-            "Der Pegassi Horus ist zunächst im Rahmen des GTA+ Early Access verfügbar.",
-            "GTA+ bringt außerdem kostenlose Bigness-Kleidung, Biker-Boni und weitere Vorteile.",
-        ]
+    lines = []
+    for line in body:
+        line = clean(line)
+        low = line.casefold()
+        if len(line) < 35:
+            continue
+        if any(noise in low for noise in ("share", "discover more", "unlock game guides", "copyright", "privacy policy")):
+            continue
+        # Ignore duplicated headline/metadata lines.
+        if low == title.casefold():
+            continue
+        lines.append(line)
 
-    wanted = (
-        "new ", "newly", "brand-new", "brand new", "early access", "vehicle", "car ",
-        "motorcycle", "bonus", "reward", "free", "available", "changed", "updated",
-        "biker", "clothing", "livery", "paint", "2x", "3x", "gta$",
-    )
-    candidates = [line for line in body if any(k in line.casefold() for k in wanted)]
-    return unique(candidates)[:6]
+    return unique(lines)[:10]
 
 
 def concept_tags(text):
@@ -953,17 +974,18 @@ def filter_new_rockstar_facts(candidates, known_concepts, known_facts):
 
 
 def classify_rockstar(title, facts):
-    blob = f"{title} {' '.join(facts)}".casefold()
+    fact_blob = " ".join(facts).casefold()
     categories = []
-    if any(x in blob for x in ("new", "neu", "brand-new", "brand new", "early access", "newly")):
+
+    if any(x in fact_blob for x in ("new ", "brand-new", "brand new", "newly", "neu", "early access", "vorabzugang")):
         categories.append("🆕 **Neu**")
-    if any(x in blob for x in ("vehicle", "fahrzeug", "supercar", "supersportwagen", "motorcycle", "motorrad", "car ")):
+    if any(x in fact_blob for x in ("vehicle", "fahrzeug", "supercar", "supersportwagen", "motorcycle", "motorrad", "car ")):
         categories.append("🚗 **neue Fahrzeugmeldung**")
-    if any(x in blob for x in ("bonus", "boni", "gta$", "2x", "3x", "biker-boni", "payout")):
+    if any(x in fact_blob for x in ("bonus", "boni", "gta$", "2x", "3x", "payout", "rabatt", "discount")):
         categories.append("💰 **neuer Bonus**")
-    if any(x in blob for x in ("free", "kostenlos", "gratis", "reward", "belohn", "clothing", "kleidung", "chameleon", "paint")):
+    if any(x in fact_blob for x in ("free", "kostenlos", "gratis", "reward", "belohn", "clothing", "kleidung", "paint", "livery")):
         categories.append("🎁 **neue Belohnung**")
-    if any(x in blob for x in ("changed", "updated", "returning", "removed", "replaced", "adjusted", "geändert")):
+    if any(x in fact_blob for x in ("changed", "updated", "returning", "removed", "replaced", "adjusted", "geändert", "geändert")):
         categories.append("⚠️ **Änderung**")
     return categories or ["🆕 **Neu**"]
 
@@ -1027,7 +1049,10 @@ async def fetch_rockstar_news():
             seen = set()
             for card in anchors:
                 url = clean(card.get("href", ""))
+                card_text = clean(card.get("text", ""))
                 if not url or url in seen:
+                    continue
+                if "gta online" not in (card_text.casefold() + " " + url.casefold()) and "gta+" not in (card_text.casefold() + " " + url.casefold()):
                     continue
                 seen.add(url)
                 article_page = await context.new_page()
@@ -1035,9 +1060,13 @@ async def fetch_rockstar_news():
                     await article_page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
                     await article_page.wait_for_timeout(5000)
                     article_text = await extract_visible_page(article_page)
-                    title = find_rockstar_title(article_text)
+                    card_text = clean(card.get("text", ""))
+                    title = find_rockstar_title(card_text)
                     if not title:
-                        title = find_rockstar_title(card.get("text", ""))
+                        title = find_rockstar_title(article_text)
+                    if not title:
+                        slug = url.rstrip("/").split("/")[-1]
+                        title = clean(slug.replace("-", " ")).title()
                     if not title:
                         continue
                     body = isolate_rockstar_article(article_text, title)
@@ -1182,6 +1211,12 @@ Gun Van Inventory
 Tactical SMG – 40% off
 Railgun – 40% off for GTA+ Members
 Compact EMP Launcher
+Double Barrel Shotgun
+Assault SMG
+Pipe Wrench
+Pipe Bombs
+Proximity Mines
+Sticky Bombs
 Other Activities
 # Rotating Content
 ## The Kortz Center Heist Primary Targets:
@@ -1201,7 +1236,15 @@ GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar
 GTA+ members can get one week of early access to the new Pegassi Horus supercar.
 The Pegassi Horus is wrapped in the Velvet Iris livery and is available for free from the Vinewood Car Club.
 Free Bigness Clothing, Biker Bonuses, and more.
-Free Chameleon Paints.
+Free Cyan/Red Flip Chameleon Paints.
+Double GTA$ on the Cluckin' Bell Farm Raid.
+60% off Biker businesses and upgrades.
+Cocaine production is doubled for GTA+ members.
+3X GTA$ and RP on Bike Service.
+50% off all Nagasaki motorcycles.
+GTA$500,000 deposited monthly. Special GTA+ Shark Cards include a 15% GTA$ bonus.
+The Vinewood Club App is included.
+The GTA+ Games Library is included.
 """
 
 ROCKSTAR_FIXTURE = """
@@ -1225,28 +1268,30 @@ def self_test():
         "Luxury Autos", "Premium Deluxe Motorsport", "Hao's Premium Test Ride",
         "LS Car Meet Test Rides", "Lucky Wheel"
     ], data["vehicles"]
-    assert len(data["discounts"]) == 3, data["discounts"]
-    assert [group for group, _ in data["discounts"]] == ["KOSTENLOS", "70% RABATT", "30% RABATT"], data["discounts"]
+    assert len(data["discounts"]) == 4, data["discounts"]
+    assert [group for group, _ in data["discounts"]] == ["KOSTENLOS", "70% RABATT", "🔫 GUN VAN — 40% RABATT", "30% RABATT"], data["discounts"]
     assert any("Grapeseed MC Clubhouse" in item for _, items in data["discounts"] for item in items), data["discounts"]
     assert any("Penaud La Coureuse" in item for item in data["gifts"]), data["gifts"]
     assert any("Bourgeoix Tee" in item for item in data["gifts"]), data["gifts"]
-    assert len(data["gta_plus"]) == 4, data["gta_plus"]
+    assert len(data["gta_plus"]) == 12, data["gta_plus"]
     assert len(data["challenges"]) == 5, data["challenges"]
     assert len(data["rotating"]) == 3, data["rotating"]
-    assert len(data["gun_van"]) == 2, data["gun_van"]
-    assert data["gun_van"][0][0] == "40% RABATT", data["gun_van"]
-    assert "Compact EMP Launcher" in data["gun_van"][1][1], data["gun_van"]
-
+    assert len(data["gun_van"]) == 7, data["gun_van"]
+    assert data["gun_van"] == [
+        "Compact EMP Launcher", "Double Barrel Shotgun", "Assault SMG",
+        "Pipe Wrench", "Pipe Bombs", "Proximity Mines", "Sticky Bombs"
+    ], data["gun_van"]
+    
     post = format_wednesday(
         data,
         "https://www.igrandtheftauto.com/gtaonline/news/this-week-in-gta-online-september-10-2026",
     )
     messages = split_message(post)
     assert all(len(x) <= DISCORD_LIMIT for x in messages)
-    assert "🚗 **FAHRZEUGE**" in post
+    assert "🚗 **NEUES AUF DEN STRASSEN**" in post
     assert "**Luxury Autos:** Vapid FMJ MK V, Grotti GT750" in post
     assert "**30% RABATT:**" in post
-    assert "⭐ **GTA+ VORTEILE**" in post
+    assert "⭐ **DAS PLUS FÜR EUCH**" in post
 
     known_concepts = known_concepts_from_wednesday(data)
     candidates = rockstar_candidates(
