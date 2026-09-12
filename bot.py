@@ -352,6 +352,10 @@ def parse_vehicles(lines):
         match = re.match(r"^(.+?)\s*\(([^)]*)\)\s*$", line)
         if current and match:
             bucket.append(clean(match.group(1)))
+        elif current == "Lucky Wheel":
+            # Lucky Wheel has one vehicle prize. Ignore unrelated recommendation/advertisement
+            # text that iGTA sometimes places directly after the prize.
+            continue
         elif current and len(line) >= 2:
             parts = [clean(x) for x in line.split(",") if clean(x)]
             bucket.extend(parts)
@@ -918,10 +922,9 @@ def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set, artic
         word in clean(article_title).casefold()
         for word in (
             "changed", "change", "updated", "update", "adjusted", "adjustment",
-            "increased", "decreased", "reduced", "removed", "replaced",
-            "changed to", "from now on", "geändert", "aktualisiert",
-            "angepasst", "erhöht", "gesenkt", "reduziert", "entfernt",
-            "ersetzt", "ab jetzt",
+            "increased", "decreased", "removed", "replaced", "changed to",
+            "from now on", "geändert", "aktualisiert", "angepasst", "erhöht",
+            "gesenkt", "entfernt", "ersetzt", "stattdessen", "ab jetzt",
         )
     )
     out = []
@@ -936,15 +939,26 @@ def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set, artic
 
     change_words = (
         "changed", "change", "updated", "update", "adjusted", "adjustment",
-        "increased", "increases", "decreased", "decreases", "reduced", "removed",
-        "replaced", "replacement", "instead", "now pays", "now offers", "now available",
-        "changed to", "from now on",
+        "increased", "increases", "decreased", "decreases", "removed",
+        "replaced", "replacement", "instead", "now pays", "now offers",
+        "changed to", "from now on", "has been changed", "has been updated",
         "geändert", "änderung", "aktualisiert", "angepasst", "erhöht", "gesenkt",
-        "reduziert", "entfernt", "ersetzt", "stattdessen", "nun", "ab jetzt",
+        "entfernt", "ersetzt", "stattdessen", "ab jetzt", "wurde geändert",
+        "wurde angepasst", "wurde erhöht", "wurde gesenkt", "wurde ersetzt",
     )
 
     def normalized_tokens(text):
         return set(re.findall(r"[a-zäöüß0-9+%-]{4,}", clean(text).casefold()))
+
+    def has_explicit_change(text):
+        key = clean(text).casefold()
+        if any(word in key for word in change_words):
+            return True
+        # "reduced" is only a change signal when the wording explicitly says that
+        # something itself was reduced/changed, not when it merely states a discount.
+        if re.search(r"\b(?:was|were|has been|have been) reduced\b", key):
+            return True
+        return bool(re.search(r"\b(?:wurde|wurden|ist|sind)\s+(?:reduziert|geändert|angepasst|erhöht|gesenkt|ersetzt)\b", key))
 
     for fact in candidates:
         fact = clean(fact)
@@ -955,7 +969,7 @@ def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set, artic
             continue
 
         concepts = fact_concepts(fact)
-        explicit_change = any(word in key for word in change_words)
+        explicit_change = has_explicit_change(key)
 
         # A Wednesday concept is considered known for the rest of the week.
         # A rewording is NOT a new Thursday fact.
@@ -1312,6 +1326,12 @@ def self_test():
     assert "Double Barrel Shotgun" not in post
     assert any(name == "Time Trial" and text == "Sawmill" for name, text in data["challenges"])
     assert any(name == "LS Car Meet Prize Ride" and "Platz unter den Top 4" in text for name, text in data["challenges"])
+    lucky = dict(data["vehicles"]).get("Lucky Wheel", [])
+    assert lucky == ["RUNE Zhaba"], lucky
+    assert "Rent Racing Sims" not in post
+    assert "Find Tactical Shooters" not in post
+    assert "Explore Story RPGs" not in post
+    assert "Read Strategy Guides" not in post
 
     known = known_concepts(data)
     candidates = rockstar_candidates(
@@ -1320,6 +1340,17 @@ def self_test():
     )
     assert filter_new_rockstar_facts(
         candidates,
+        wednesday_facts(data),
+        known,
+        "GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar",
+    ) == []
+
+    assert filter_new_rockstar_facts(
+        [
+            "GTA+ members get 60% off Biker businesses and upgrades.",
+            "GTA$500,000 deposited monthly into Maze Bank.",
+            "Special GTA+ Shark Cards include a 15% GTA$ bonus.",
+        ],
         wednesday_facts(data),
         known,
         "GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar",
@@ -1347,6 +1378,12 @@ def self_test():
         known,
     )
     assert new
+    new_activity = filter_new_rockstar_facts(
+        ["Wechselt eure Gestalt und kassiert dreifache Belohnungen in brandneuen zufälligen Verwandlungsrennen"],
+        wednesday_facts(data),
+        known,
+    )
+    assert new_activity
 
     monthly = make_monthly_agent_report()
     assert "LS-INSIDER – GEHEIMBERICHT" in monthly
