@@ -62,22 +62,25 @@ def save_state(state):
 
 
 def post_to_discord(messages):
+    if isinstance(messages, str):
+        messages = [messages]
+
+    for index, message in enumerate(messages, 1):
+        if len(message) > DISCORD_LIMIT:
+            raise RuntimeError(f"Discord-Nachricht {index} ist zu lang: {len(message)}")
+
     if TEST_MODE:
-        if isinstance(messages, str):
-            messages = [messages]
         for index, message in enumerate(messages, 1):
             print(f"TEST_MODE: Discord-Nachricht {index}/{len(messages)} NICHT gesendet ({len(message)} Zeichen)")
-            print("--- TEST-NACHRICHT ---\n" + message)
+            print("--- TEST-NACHRICHT ---")
+            print(message)
         return
 
     webhook = os.getenv("DISCORD_WEBHOOK_URL")
     if not webhook:
         raise RuntimeError("DISCORD_WEBHOOK_URL ist nicht gesetzt.")
-    if isinstance(messages, str):
-        messages = [messages]
+
     for index, message in enumerate(messages, 1):
-        if len(message) > DISCORD_LIMIT:
-            raise RuntimeError(f"Discord-Nachricht {index} ist zu lang: {len(message)}")
         response = requests.post(
             webhook,
             json={"content": message, "allowed_mentions": {"parse": []}},
@@ -383,42 +386,93 @@ def parse_gifts(sections, full_text):
 
 
 def parse_challenges(lines):
-    names = ["Weekly Challenge", "LS Car Meet Prize Ride", "Premium Race", "HSW Time Trial", "Time Trial"]
+    names = [
+        "Weekly Challenge",
+        "LS Car Meet Prize Ride",
+        "Premium Race",
+        "HSW Time Trial",
+        "Time Trial",
+    ]
+
+    inventory_markers = (
+        "gun van inventory",
+        "tactical smg",
+        "railgun – 40% off",
+        "railgun - 40% off",
+        "compact emp launcher",
+        "double barrel shotgun",
+        "assault smg",
+        "pipe wrench",
+        "pipe bombs",
+        "proximity mines",
+        "sticky bombs",
+    )
+
     cleaned_lines = []
     for raw in lines:
         line = clean(raw)
         if not line:
             continue
         low = line.casefold()
-        for marker in (
-            "gun van inventory",
-            "tactical smg",
-            "railgun – 40% off",
-            "railgun - 40% off",
-            "compact emp launcher",
-        ):
-            pos = low.find(marker)
-            if pos >= 0:
-                line = clean(line[:pos].rstrip(" ,;:-"))
-                break
+        cut_positions = [
+            low.find(marker) for marker in inventory_markers
+            if low.find(marker) >= 0
+        ]
+        if cut_positions:
+            cut_at = min(cut_positions)
+            line = clean(line[:cut_at].rstrip(" ,;:-"))
         if line:
             cleaned_lines.append(line)
-    lines = cleaned_lines
+
     hits = []
-    for i, line in enumerate(lines):
+    for i, line in enumerate(cleaned_lines):
         normalized = strip_markup(line).rstrip(":：").strip().casefold()
         for name in sorted(names, key=len, reverse=True):
             if normalized == name.casefold() or normalized.startswith(name.casefold() + " "):
                 hits.append((i, name))
                 break
+
     out = []
     for index, (start_i, name) in enumerate(hits):
-        end_i = hits[index + 1][0] if index + 1 < len(hits) else len(lines)
-        body = [x for x in lines[start_i + 1:end_i] if clean(x)]
-        text = " ".join(body)
-        text = re.sub(r"^Place in the Top 4.*?Pfister Neon", "Platz unter den Top 4 in der LS Car Meet Series für den Pfister Neon", text, flags=re.I)
-        text = re.sub(r"^Place Top 4.*?Pfister Neon", "Platz unter den Top 4 in der LS Car Meet Series für den Pfister Neon", text, flags=re.I)
-        text = re.sub(r"^Earn GTA\$1,000,000.*?Junk (?:Tracksuit|Trainingsanzug)", "Verdient GTA$1.000.000 durch den Verkauf aller Arten von Waren und erhaltet zusätzlich GTA$1.000.000 sowie den Junk-Trainingsanzug", text, flags=re.I)
+        end_i = hits[index + 1][0] if index + 1 < len(hits) else len(cleaned_lines)
+        start_line = strip_markup(cleaned_lines[start_i]).rstrip(":：").strip()
+        remainder = ""
+        if start_line.casefold().startswith(name.casefold() + " "):
+            remainder = start_line[len(name):].strip(" :–—-\t")
+
+        body = []
+        if remainder:
+            body.append(remainder)
+        body.extend(cleaned_lines[start_i + 1:end_i])
+        text = " ".join(x for x in body if clean(x))
+
+        # The iGTA page can append the Gun Van inventory directly after the Time Trial.
+        # Keep only the actual Time Trial location.
+        if name == "Time Trial":
+            for marker in inventory_markers[5:]:
+                pos = text.casefold().find(marker)
+                if pos >= 0:
+                    text = clean(text[:pos].rstrip(" ,;:-"))
+                    break
+
+        text = re.sub(
+            r"^Place in the Top 4.*?Pfister Neon$",
+            "Platz unter den Top 4 in der LS Car Meet Series für den Pfister Neon",
+            text,
+            flags=re.I,
+        )
+        text = re.sub(
+            r"^Place Top 4.*?Pfister Neon$",
+            "Platz unter den Top 4 in der LS Car Meet Series für den Pfister Neon",
+            text,
+            flags=re.I,
+        )
+        text = re.sub(
+            r"^Earn GTA\$1,000,000.*?Junk (?:Tracksuit|Trainingsanzug)$",
+            "Verdient GTA$1.000.000 durch den Verkauf aller Arten von Waren und erhaltet zusätzlich GTA$1.000.000 sowie den Junk-Trainingsanzug",
+            text,
+            flags=re.I,
+        )
         text = re.sub(r"Del Perro Beach to Murietta Heights", "Del Perro Beach nach Murietta Heights", text, flags=re.I)
         text = clean(text)
         if text:
@@ -766,39 +820,41 @@ def rockstar_candidates(title, body):
 
 
 def fact_concepts(fact):
-    low = fact.casefold()
+    low = clean(fact).casefold()
     concepts = set()
-    for concept, markers in {
-        "horus": ("pegassi horus",),
-        "early_access": ("early access", "vorabzugang", "frühen zugang"),
+    markers = {
+        "horus": ("pegassi horus", "horus supercar"),
+        "early_access": ("early access", "vorabzugang", "frühen zugang", "früher zugang"),
         "chameleon": ("chameleon", "chamäleon"),
         "bigness": ("bigness",),
         "cluckin_bell": ("cluckin' bell", "cluckin bell"),
         "scene_of_crime": ("scene of the crime", "tatort"),
-        "biker": ("biker",),
+        "biker": ("biker", "biker business", "biker-unternehmen"),
         "bike_service": ("bike service", "bike-service", "motorrad-service"),
         "nagasaki": ("nagasaki",),
-        "monthly_500k": ("500,000", "500.000", "500k"),
+        "monthly_500k": ("500.000", "500,000", "500k"),
         "cashcard": ("shark card", "cash card", "cashcard"),
         "vinewood_app": ("vinewood club app",),
         "games_library": ("games library",),
-    }.items():
-        if any(marker in low for marker in markers):
+    }
+    for concept, concept_markers in markers.items():
+        if any(marker in low for marker in concept_markers):
             concepts.add(concept)
     return concepts
 
 
 def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set):
-    """Return only genuinely new Rockstar information compared with Wednesday.
+    """Return only genuinely NEW Rockstar information compared with Wednesday.
 
-    A Thursday fact that merely rephrases something already reported on Wednesday
-    is suppressed. A fact is allowed through when Rockstar clearly describes a
-    change/update/replacement, because that is precisely what the Thursday edition
-    is supposed to reveal.
+    Anything that belongs to a topic already reported Wednesday is blocked unless the
+    Rockstar sentence explicitly describes a change, replacement, increase, reduction,
+    or similar update. This is deliberately conservative: a false negative is preferable
+    to posting the same weekly information twice.
     """
     known = [clean(x).casefold() for x in (known_facts or [])]
     known_concepts_set = set(known_concepts_set or set())
     out = []
+
     signal_words = (
         "gta+", "gta$", "2x", "3x", "4x", "5x", "6x", "free", "kostenlos",
         "reward", "belohn", "bonus", "discount", "rabatt", "vehicle", "supercar",
@@ -806,12 +862,14 @@ def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set):
         "paint", "livery", "clothing", "kleidung", "nagasaki", "biker",
         "bike service", "cluckin' bell", "scene of the crime", "shark card", "cash card",
     )
+
     change_words = (
         "changed", "change", "updated", "update", "adjusted", "adjustment",
         "increased", "increases", "decreased", "decreases", "reduced", "removed",
-        "replaced", "replacement", "instead", "now pays", "now offers",
+        "replaced", "replacement", "instead", "now pays", "now offers", "now available",
+        "changed to", "from now on",
         "geändert", "änderung", "aktualisiert", "angepasst", "erhöht", "gesenkt",
-        "reduziert", "entfernt", "ersetzt", "stattdessen", "nun",
+        "reduziert", "entfernt", "ersetzt", "stattdessen", "nun", "ab jetzt",
     )
 
     def normalized_tokens(text):
@@ -828,9 +886,8 @@ def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set):
         concepts = fact_concepts(fact)
         explicit_change = any(word in key for word in change_words)
 
-        # Wednesday already covered this topic. Only an explicit change is
-        # interesting on Thursday. This prevents Rockstar's reworded Horus,
-        # Cluckin' Bell, GTA+ app, Games Library, etc. from being reposted.
+        # A Wednesday concept is considered known for the rest of the week.
+        # A rewording is NOT a new Thursday fact.
         if concepts & known_concepts_set and not explicit_change:
             continue
 
@@ -1167,6 +1224,8 @@ def self_test():
     assert "Games, GTA VI" not in post
     assert "Gun Van Inventory" not in post
     assert "Tactical SMG" not in post
+    assert "Double Barrel Shotgun" not in post
+    assert any(name == "Time Trial" and text == "Sawmill" for name, text in data["challenges"])
 
     known = known_concepts(data)
     candidates = rockstar_candidates(
@@ -1175,13 +1234,14 @@ def self_test():
     )
     assert filter_new_rockstar_facts(candidates, wednesday_facts(data), known) == []
 
-    duplicate_topics = [
-        "Members at GTA+ receive one week of early access to the new Pegassi Horus through the Vinewood Car Club.",
-        "Every week, get 2X GTA$ on the first completion of Scene of the Crime in the Cluckin' Bell Farm Raid.",
+    exact_live_like = [
+        "GTA+ members can get one week of early access to the new Pegassi Horus supercar.",
+        "From September 10 through October 7, GTA+ members receive 2X GTA$ for their first weekly completion of Scene of the Crime.",
         "GTA+ members get 60% off Biker businesses and upgrades.",
-        "GTA$500,000 is deposited monthly into Maze Bank for GTA+ members.",
+        "GTA$500,000 deposited monthly into Maze Bank.",
+        "Special GTA+ Shark Cards include a 15% GTA$ bonus.",
     ]
-    assert filter_new_rockstar_facts(duplicate_topics, wednesday_facts(data), known) == []
+    assert filter_new_rockstar_facts(exact_live_like, wednesday_facts(data), known) == []
 
     live_like = [
         "Members at GTA+ receive one week of early access to the new Pegassi Horus through the Vinewood Car Club.",
@@ -1199,6 +1259,8 @@ def self_test():
 
     monthly = make_monthly_agent_report()
     assert "LS-INSIDER – GEHEIMBERICHT" in monthly
+    assert "Psst … Lagebericht aus Los Santos." in monthly
+    assert "Keine neuen Vorkommnisse zu melden." in monthly
     assert is_first_friday(date(2026, 9, 4))
     assert not is_first_friday(date(2026, 9, 11))
 
