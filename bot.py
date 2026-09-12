@@ -268,6 +268,33 @@ def vehicle_group(line):
 def parse_vehicles(lines):
     result, current, bucket = [], None, []
 
+    footer_markers = {
+        "games", "gta vi", "gta online", "gta v", "ballad of gay tony",
+        "chinatown wars", "lost and damned", "gta iv", "vice city stories",
+        "liberty city stories", "gta san andreas", "gta advance", "gta vice city",
+        "gta iii", "gta 2", "gta london 1961", "gta london 1969",
+        "features", "news", "info", "guides", "maps", "images", "videos",
+        "downloads", "forum", "sitemap", "contact us", "about us", "staff",
+        "members", "copyright notice", "privacy policy", "more from us",
+        "bluesky", "facebook", "x / twitter", "our partners",
+    }
+
+    hard_stop_phrases = (
+        "0 comments",
+        "add your comment",
+        "there are currently no comments",
+        "more gta online news",
+        "all gta online news",
+        "advertisements",
+        "discover more",
+        "action & platform games",
+        "thanks for your support",
+        "this article has been viewed",
+        "unlock game guides",
+        "© 2009",
+        "all trademarks",
+    )
+
     def flush():
         nonlocal bucket
         if current and bucket:
@@ -276,23 +303,52 @@ def parse_vehicles(lines):
 
     for raw in lines:
         line = clean(raw)
+        low = strip_markup(line).casefold().rstrip(":").strip()
+
+        cut_positions = [low.find(marker) for marker in hard_stop_phrases if low.find(marker) >= 0]
+        stop_after_prefix = False
+        if cut_positions:
+            cut_at = min(cut_positions)
+            prefix = clean(line[:cut_at].rstrip(" ,;:-"))
+            if prefix:
+                line = prefix
+                low = strip_markup(line).casefold().rstrip(":").strip()
+                stop_after_prefix = True
+            else:
+                flush()
+                current = None
+                break
+
+        if low in footer_markers:
+            flush()
+            current = None
+            break
+
         group = vehicle_group(line)
         if group:
             flush()
             current = group
             remainder = re.sub(r"^.*?:\s*", "", line).strip()
-            if remainder and remainder.lower() != group.lower():
-                bucket.extend(
-                    [clean(x) for x in remainder.split(",") if clean(x)]
-                )
+            if remainder and remainder.casefold() != group.casefold():
+                bucket.extend([clean(x) for x in remainder.split(",") if clean(x)])
+            if stop_after_prefix:
+                flush()
+                current = None
+                break
             continue
+
         match = re.match(r"^(.+?)\s*\(([^)]*)\)\s*$", line)
         if current and match:
             bucket.append(clean(match.group(1)))
         elif current and len(line) >= 2:
-            # Falls die Website die Fahrzeugnamen direkt hinter dem Showroom ausgibt.
             parts = [clean(x) for x in line.split(",") if clean(x)]
             bucket.extend(parts)
+
+        if stop_after_prefix:
+            flush()
+            current = None
+            break
+
     flush()
     return result
 
@@ -320,7 +376,26 @@ def parse_gifts(sections, full_text):
 
 def parse_challenges(lines):
     names = ["Weekly Challenge", "LS Car Meet Prize Ride", "Premium Race", "HSW Time Trial", "Time Trial"]
-    lines = [clean(x) for x in lines if clean(x)]
+    cleaned_lines = []
+    for raw in lines:
+        line = clean(raw)
+        if not line:
+            continue
+        low = line.casefold()
+        for marker in (
+            "gun van inventory",
+            "tactical smg",
+            "railgun – 40% off",
+            "railgun - 40% off",
+            "compact emp launcher",
+        ):
+            pos = low.find(marker)
+            if pos >= 0:
+                line = clean(line[:pos].rstrip(" ,;:-"))
+                break
+        if line:
+            cleaned_lines.append(line)
+    lines = cleaned_lines
     hits = []
     for i, line in enumerate(lines):
         normalized = strip_markup(line).rstrip(":：").strip().casefold()
@@ -545,22 +620,43 @@ def format_wednesday(data, source_url):
 
 
 def split_message(text):
+    """Split safely at Discord's limit, including oversized single lines."""
     if len(text) <= DISCORD_LIMIT:
         return [text]
-    lines = text.splitlines()
-    units = [[line] for line in lines if line.strip()]
+
+    def hard_split(line):
+        parts = []
+        remaining = clean(line)
+        while len(remaining) > DISCORD_LIMIT:
+            cut = remaining.rfind(" ", 0, DISCORD_LIMIT + 1)
+            if cut < 1:
+                cut = DISCORD_LIMIT
+            parts.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+        if remaining:
+            parts.append(remaining)
+        return parts
+
     out, current = [], []
-    for unit in units:
-        candidate = ("\n".join(current + unit)).strip() if current else unit[0]
-        if len(candidate) <= DISCORD_LIMIT:
-            current.extend(unit)
-        else:
-            if current:
+    current_len = 0
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        for line in hard_split(raw):
+            if not current:
+                current = [line]
+                current_len = len(line)
+                continue
+            candidate_len = current_len + 1 + len(line)
+            if candidate_len <= DISCORD_LIMIT:
+                current.append(line)
+                current_len = candidate_len
+            else:
                 out.append("\n".join(current).strip())
-            current = list(unit)
+                current = [line]
+                current_len = len(line)
     if current:
         out.append("\n".join(current).strip())
-    # Quelle möglichst immer komplett in der letzten Nachricht halten.
     return out
 
 
@@ -685,6 +781,13 @@ def fact_concepts(fact):
 
 
 def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set):
+    """Return only genuinely new Rockstar information compared with Wednesday.
+
+    A Thursday fact that merely rephrases something already reported on Wednesday
+    is suppressed. A fact is allowed through when Rockstar clearly describes a
+    change/update/replacement, because that is precisely what the Thursday edition
+    is supposed to reveal.
+    """
     known = [clean(x).casefold() for x in (known_facts or [])]
     known_concepts_set = set(known_concepts_set or set())
     out = []
@@ -695,51 +798,92 @@ def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set):
         "paint", "livery", "clothing", "kleidung", "nagasaki", "biker",
         "bike service", "cluckin' bell", "scene of the crime", "shark card", "cash card",
     )
+    change_words = (
+        "changed", "change", "updated", "update", "adjusted", "adjustment",
+        "increased", "increases", "decreased", "decreases", "reduced", "removed",
+        "replaced", "replacement", "instead", "now pays", "now offers",
+        "geändert", "änderung", "aktualisiert", "angepasst", "erhöht", "gesenkt",
+        "reduziert", "entfernt", "ersetzt", "stattdessen", "nun",
+    )
+
+    def normalized_tokens(text):
+        return set(re.findall(r"[a-zäöüß0-9+%-]{4,}", clean(text).casefold()))
+
     for fact in candidates:
         fact = clean(fact)
         key = fact.casefold()
         if not key or key in known:
             continue
-
-        # Reine Hintergrund-/Story-Prosa ohne Bonus-, Fahrzeug- oder Reward-Signal
-        # ist keine eigenständige Geheimdienstmeldung.
         if not any(word in key for word in signal_words):
             continue
 
-        # Wenn ein Fakt ein Thema berührt, das Mittwoch bereits gemeldet hat,
-        # gilt er nicht als neu – auch bei anders formulierter Rockstar-Prosa.
         concepts = fact_concepts(fact)
-        if concepts & known_concepts_set:
+        explicit_change = any(word in key for word in change_words)
+
+        # Wednesday already covered this topic. Only an explicit change is
+        # interesting on Thursday. This prevents Rockstar's reworded Horus,
+        # Cluckin' Bell, GTA+ app, Games Library, etc. from being reposted.
+        if concepts & known_concepts_set and not explicit_change:
             continue
 
-        # Zusätzlicher Satzvergleich für leicht umformulierte Wiederholungen.
-        ft = set(re.findall(r"[a-zäöüß0-9+%-]{4,}", key))
+        ft = normalized_tokens(fact)
         duplicate = False
         for old in known:
-            ot = set(re.findall(r"[a-zäöüß0-9+%-]{4,}", old))
+            ot = normalized_tokens(old)
             overlap = len(ft & ot) / max(1, len(ft))
-            if len(ft) >= 5 and overlap >= 0.82:
+            if len(ft) >= 5 and overlap >= 0.72:
                 duplicate = True
                 break
-        if not duplicate:
-            out.append(fact)
-    return out
+        if duplicate and not explicit_change:
+            continue
+
+        out.append(fact)
+
+    return unique(out)
 
 
 def classify_rockstar(facts):
-    blob = " ".join(facts).casefold()
+    """Return only categories that are actually represented by the new facts."""
     categories = []
+    blob = " ".join(facts).casefold()
+
     if any(x in blob for x in ("new", "brand-new", "brand new", "neu", "early access", "vorabzugang")):
         categories.append("🆕 **Neu**")
+    if any(x in blob for x in ("changed", "change", "updated", "update", "adjusted", "geändert", "änderung", "angepasst")):
+        categories.append("⚠️ **Änderung**")
     if any(x in blob for x in ("vehicle", "fahrzeug", "supercar", "supersportwagen", "motorcycle", "motorrad")):
         categories.append("🚗 **neue Fahrzeugmeldung**")
     if any(x in blob for x in ("bonus", "boni", "gta$", "2x", "3x", "payout", "rabatt", "discount")):
         categories.append("💰 **neuer Bonus**")
     if any(x in blob for x in ("free", "kostenlos", "reward", "belohn", "clothing", "kleidung", "paint", "livery")):
         categories.append("🎁 **neue Belohnung**")
-    if any(x in blob for x in ("changed", "updated", "returning", "removed", "replaced", "adjusted", "geändert")):
-        categories.append("⚠️ **Änderung**")
-    return categories or ["🆕 **Neu**"]
+
+    return categories
+
+
+def month_key(today=None):
+    return (today or datetime.now(VIENNA).date()).strftime("%Y-%m")
+
+
+def is_first_friday(today=None):
+    today = today or datetime.now(VIENNA).date()
+    return today.weekday() == 4 and today.day <= 7
+
+
+def make_monthly_agent_report():
+    return "\n".join(
+        [
+            "🕵️ **LS-INSIDER – MONATSBERICHT**",
+            "",
+            "🤫 **Psst … Zeit für den monatlichen Lagebericht.**",
+            "",
+            "**INFORMANTENBERICHT**",
+            "",
+            "*„Der Monat ist noch nicht vorbei – und in Los Santos kann sich jederzeit etwas ändern. Deshalb behalte ich die Lage weiter im Auge und melde mich, sobald es etwas wirklich Neues zu berichten gibt.“*",
+            "",
+            "💬 *„Bis dahin: Augen offen halten und immer wissen, was auf den Straßen passiert.“*",
+        ]
+    )
 
 
 def translate_rockstar(text):
@@ -758,31 +902,6 @@ def translate_rockstar(text):
     return clean(result)
 
 
-def month_key(today=None):
-    return (today or datetime.now(VIENNA).date()).strftime("%Y-%m")
-
-
-def is_first_thursday(today=None):
-    today = today or datetime.now(VIENNA).date()
-    return today.weekday() == 3 and today.day <= 7
-
-
-def make_monthly_agent_report():
-    return "\n".join(
-        [
-            "🕵️ **LS-INSIDER – GEHEIMBERICHT**",
-            "",
-            "🤫 **Psst … Lagebericht aus Los Santos.**",
-            "",
-            "**INFORMANTENBERICHT**",
-            "",
-            "*„Keine neuen Vorkommnisse zu melden. Die Lage in Los Santos bleibt unter Beobachtung. Ich halte weiterhin Augen und Ohren offen und melde mich, sobald sich etwas verändert.“*",
-            "",
-            "💬 *„Bis dahin heißt es: unauffällig bleiben und aufmerksam sein.“*",
-        ]
-    )
-
-
 def make_thursday_post(article, new_facts):
     cats = classify_rockstar(new_facts)
     lines = [
@@ -792,8 +911,12 @@ def make_thursday_post(article, new_facts):
         "Unser Informant hat Neuigkeiten aus Los Santos durchgegeben:",
         "",
         f"**{translate_rockstar(article['title'])}**",
-        "",
-        *cats,
+    ]
+
+    if cats:
+        lines += ["", *cats]
+
+    lines += [
         "",
         "🕵️ **INFORMANTENBERICHT**",
     ]
@@ -882,30 +1005,45 @@ async def run_thursday(known_data=None):
     candidates = rockstar_candidates(article["title"], article["body"])
     new_facts = filter_new_rockstar_facts(candidates, known_facts, known_set)
     print(f"Rockstar: {len(candidates)} Kandidaten | {len(new_facts)} neu gegenüber Mittwoch")
-    month = month_key()
-    monthly_sent = state.get("monthly_agent_report_month") == month
-    secret_sent = state.get("thursday_secret_month") == month
+
+    # Donnerstag veröffentlicht ausschließlich echte Änderungen gegenüber Mittwoch.
+    # Kein Monatsbericht, kein Füllpost, keine Wiederholung bereits bekannter Informationen.
     if not new_facts:
-        if is_first_thursday() and not monthly_sent and not secret_sent:
-            post_to_discord(make_monthly_agent_report())
-            if not TEST_MODE:
-                state["monthly_agent_report_month"] = month
-                save_state(state)
-        else:
-            print("Donnerstag: Keine neuen relevanten Informationen. Kein Post.")
+        print("Donnerstag: Keine neuen relevanten Informationen. Kein Post.")
         return
+
     if not TEST_MODE and state.get("thursday_url") == article["url"]:
         print("Donnerstag: Artikel bereits veröffentlicht.")
         return
+
     post_to_discord(make_thursday_post(article, new_facts))
     if not TEST_MODE:
         state.update(
             {
                 "thursday_url": article["url"],
                 "thursday_facts": new_facts,
-                "thursday_secret_month": month,
             }
         )
+        save_state(state)
+
+
+async def run_friday_monthly():
+    print("\nLS-INSIDER – FREITAG / MONATSBERICHT")
+    today = datetime.now(VIENNA).date()
+    if not is_first_friday(today):
+        print("Freitag: Kein Monatsbericht, da heute nicht der erste Freitag des Monats ist.")
+        return
+
+    state = load_state()
+    month = month_key(today)
+    if not TEST_MODE and state.get("monthly_agent_report_month") == month:
+        print("Monatsbericht für diesen Monat bereits veröffentlicht.")
+        return
+
+    post_to_discord(make_monthly_agent_report())
+
+    if not TEST_MODE:
+        state["monthly_agent_report_month"] = month
         save_state(state)
 
 
@@ -1016,6 +1154,11 @@ def self_test():
     assert all(len(message) <= DISCORD_LIMIT for message in messages)
     assert "⭐ **DAS PLUS FÜR EUCH**" in post
     assert "DIESE WOCHE AKTUELL IN LOS SANTOS" in post
+    assert "0 Comments" not in post
+    assert "More GTA Online News" not in post
+    assert "Games, GTA VI" not in post
+    assert "Gun Van Inventory" not in post
+    assert "Tactical SMG" not in post
 
     known = known_concepts(data)
     candidates = rockstar_candidates(
@@ -1039,9 +1182,9 @@ def self_test():
     assert new
 
     monthly = make_monthly_agent_report()
-    assert "Keine neuen Vorkommnisse zu melden." in monthly
-    assert is_first_thursday(date(2026, 9, 3))
-    assert not is_first_thursday(date(2026, 9, 10))
+    assert "LS-INSIDER – MONATSBERICHT" in monthly
+    assert is_first_friday(date(2026, 9, 4))
+    assert not is_first_friday(date(2026, 9, 11))
 
     print("SELF-TEST OK")
     print(f"Mittwoch: {len(messages)} Nachricht(en), {len(post)} Zeichen")
@@ -1070,6 +1213,8 @@ async def main():
         await run_wednesday()
     elif now.weekday() == 3:
         await run_thursday()
+    elif now.weekday() == 4:
+        await run_friday_monthly()
     else:
         print("Heute ist kein LS-Insider-Veröffentlichungstag.")
 
