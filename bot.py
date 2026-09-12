@@ -200,6 +200,9 @@ IGTA_HEADING_ALIASES = {
         "other activities", "other activity", "weekly rotating content", "rotating content",
         "additional activities", "other content", "more gta online activities",
     ],
+    "gun_van": [
+        "gun van inventory", "gun van", "gunvan inventory",
+    ],
 }
 
 
@@ -337,6 +340,52 @@ def parse_percent_groups(lines):
 
 def parse_discounts(lines):
     return parse_percent_groups(lines)
+
+
+def parse_gun_van(lines):
+    discount_groups = []
+    inventory = []
+
+    for raw in lines:
+        line = clean(raw)
+        if not line:
+            continue
+        low = line.casefold()
+
+        # Ignore page navigation/boilerplate that can accidentally land in this section.
+        if any(x in low for x in (
+            "share", "discover more", "unlock game guides", "this article has been viewed",
+            "thanks for your support", "newswire", "inhalts-updates",
+        )):
+            continue
+
+        match = re.search(r"(\d{1,3})\s*%\s*(?:off|discount|rabatt)", line, re.I)
+        if match:
+            pct = int(match.group(1))
+            item = re.sub(r"\s*[–—-]\s*\d{1,3}\s*%\s*(?:off|discount|rabatt).*?$", "", line, flags=re.I)
+            item = re.sub(r"\b\d{1,3}\s*%\s*(?:off|discount|rabatt)\b", "", item, flags=re.I)
+            item = item.strip(" -–—:")
+            if item:
+                label = f"🔫 GUN VAN — {pct}% RABATT"
+                if "gta+" in low:
+                    item = f"{item} (GTA+)"
+                discount_groups.append((label, [item]))
+            continue
+
+        # Typical inventory line: a plain item name, or a comma-separated list.
+        line = re.sub(r"^(?:inventory|gun van inventory)\s*:?\s*", "", line, flags=re.I)
+        parts = [clean(x) for x in re.split(r",|;|\s+\|\s+", line) if clean(x)]
+        for part in parts:
+            if 2 <= len(part) <= 100 and not re.search(r"(?:^|\s)(?:price|available|gta\+ members?)\b", part, re.I):
+                inventory.append(part)
+
+    # Dedupe inventory and merge identical discount percentages into one group.
+    merged = {}
+    for label, items in discount_groups:
+        merged.setdefault(label, []).extend(items)
+    discount_groups = [(label, unique(items)) for label, items in merged.items()]
+    discount_groups.sort(key=lambda x: -int(re.search(r"(\d+)%", x[0]).group(1)))
+    return discount_groups, unique(inventory)
 
 
 def _normalize_vehicle_group(line: str):
@@ -626,6 +675,8 @@ def make_wednesday_data(weekly_text: str, gta_plus_text: str = ""):
         "bonuses": parse_bonuses(sections.get("bonuses", [])),
         "vehicles": parse_vehicle_groups(sections.get("vehicles", [])),
         "discounts": sort_discount_groups(parse_discounts(sections.get("discounts", []))),
+        "gun_van_discounts": parse_gun_van(sections.get("gun_van", []))[0],
+        "gun_van_inventory": parse_gun_van(sections.get("gun_van", []))[1],
         "gifts": parse_gifts(sections, weekly_text),
         "gta_plus": parse_gta_plus_benefits(gta_plus_text),
         "challenges": parse_challenges(sections.get("challenges", [])),
@@ -648,6 +699,9 @@ def wednesday_facts(data):
         facts.extend(items)
     for group, items in data["discounts"]:
         facts.extend(items)
+    for group, items in data.get("gun_van_discounts", []):
+        facts.extend(items)
+    facts.extend(data.get("gun_van_inventory", []))
     facts.extend(data["gifts"])
     facts.extend(data["gta_plus"])
     for name, text in data["challenges"]:
@@ -719,12 +773,18 @@ def format_wednesday(data, source_url):
         for group, items in data["vehicles"]:
             lines.append(f"**{group}:** " + ", ".join(items))
 
-    if data["discounts"]:
+    if data["discounts"] or data.get("gun_van_discounts"):
         lines += ["", "🏷️ **LAUFENDE DEALS**"]
-        for group, items in data["discounts"]:
+        deal_groups = list(data.get("discounts", [])) + list(data.get("gun_van_discounts", []))
+        lines.append("")
+        for group, items in sort_discount_groups(deal_groups):
             lines.append(f"**{group}:** " + ", ".join(items))
+        # Keep only one blank separator before the next main section.
+        if lines and lines[-1] == "":
+            lines.pop()
 
-    if data["gifts"]:
+    if data.get("gifts"):
+
         lines += ["", "🎁 **GESCHENKE & BEUTE**"] + [f"• {x}" for x in data["gifts"]]
 
     if data["gta_plus"]:
@@ -737,6 +797,10 @@ def format_wednesday(data, source_url):
 
     if data["rotating"]:
         lines += ["", "📍 **DIESE WOCHE AKTUELL IN LOS SANTOS**"] + [f"• {x}" for x in data["rotating"]]
+
+    if data.get("gun_van_inventory"):
+        lines += ["", "🔫 **NEUES AUS DEM GUN VAN**"]
+        lines.append("• Aktuelles Inventar: " + ", ".join(data["gun_van_inventory"]))
 
     lines += [
         "",
@@ -1300,6 +1364,10 @@ The Black Box File
 The Gangbanger Robbery: Dinka Blista Kanjo (Compact)
 The Cargo Ship Robbery: Benefactor Stirling GT (Sports Classic)
 The McTony Robbery: Enus Jubilee (SUV)
+Gun Van Inventory
+Tactical SMG – 40% off (GTA+ Members)
+Railgun – 40% off (GTA+ Members)
+Compact EMP Launcher, Double Barrel Shotgun, Assault SMG, Pipe Wrench, Pipe Bombs, Proximity Mines, Sticky Bombs
 """
 
 GTA_PLUS_FIXTURE = """
@@ -1347,6 +1415,9 @@ def self_test():
     assert len(data["gta_plus"]) == 12, data["gta_plus"]
     assert len(data["challenges"]) == 5, data["challenges"]
     assert len(data["rotating"]) == 3, data["rotating"]
+    assert len(data["gun_van_discounts"]) == 1, data["gun_van_discounts"]
+    assert any("Tactical SMG" in x for x in data["gun_van_discounts"][0][1]), data["gun_van_discounts"]
+    assert any("Compact EMP Launcher" in x for x in data["gun_van_inventory"]), data["gun_van_inventory"]
     assert all("This article has been viewed" not in x for x in data["rotating"])
     assert all("Share" not in x for x in data["rotating"])
     post = format_wednesday(
@@ -1359,6 +1430,8 @@ def self_test():
     assert "**Luxury Autos:** Vapid FMJ MK V, Grotti GT750" in post
     assert "**30% RABATT:**" in post
     assert "⭐ **DAS PLUS FÜR EUCH**" in post
+    assert "🔫 **NEUES AUS DEM GUN VAN**" in post
+    assert "🔫 GUN VAN — 40% RABATT" in post
 
     known_concepts = known_concepts_from_wednesday(data)
     candidates = rockstar_candidates(
@@ -1384,6 +1457,8 @@ def self_test():
     print(f"GTA+: {len(data['gta_plus'])}")
     print(f"Challenges: {len(data['challenges'])}")
     print(f"Rotierende Inhalte: {len(data['rotating'])}")
+    print(f"Gun Van Rabattgruppen: {len(data['gun_van_discounts'])}")
+    print(f"Gun Van Inventar: {len(data['gun_van_inventory'])}")
 
 
 # ============================================================
