@@ -2,10 +2,16 @@ name: GTA Eventwoche
 
 on:
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "Nur für manuellen Test aktivieren"
+        required: false
+        default: "false"
 
   schedule:
-    # Mittwoch und Donnerstag, jede Stunde
-    - cron: "0 * * * 3,4"
+    # Mittwoch und Donnerstag: jede volle Stunde von 15:00 bis 23:00 Uhr Wien
+    - cron: "0 15-23 * * 3,4"
+      timezone: "Europe/Vienna"
 
 permissions:
   contents: write
@@ -15,7 +21,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Repository laden
         uses: actions/checkout@v4
         with:
@@ -35,13 +40,14 @@ jobs:
       - name: LS-Insider starten
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          LS_INSIDER_TEST_MODE: ${{ inputs.test_mode }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python bot.py
 
       - name: Status speichern
         run: |
           git config user.name "LS-Insider Bot"
           git config user.email "ls-insider-bot@users.noreply.github.com"
-
           git add weekly_state.json
 
           if git diff --cached --quiet; then
