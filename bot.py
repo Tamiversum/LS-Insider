@@ -14,6 +14,7 @@ ROCKSTAR_URL = "https://www.rockstargames.com/de/newswire?tag_id=735"
 STATE_FILE = "weekly_state.json"
 VIENNA = ZoneInfo("Europe/Vienna")
 TEST_MODE = os.getenv("LS_INSIDER_TEST_MODE", "false").lower() == "true"
+QUICK_TEST = os.getenv("LS_INSIDER_QUICK_TEST", "false").lower() == "true"
 DISCORD_LIMIT = 1950
 TIMEOUT_MS = 60000
 
@@ -364,6 +365,65 @@ def parse_vehicles(lines):
     return result
 
 
+def parse_vehicles_from_full_text(full_text):
+    """Fallback for live iGTA pages whose vehicle heading is not parsed into a section."""
+    lines = [clean(x) for x in (full_text or "").splitlines() if clean(x)]
+    result, current, bucket = [], None, []
+    stop_heads = {
+        "discounts", "discount", "challenges", "weekly challenges",
+        "other activities", "rotating content", "free penaud la coureuse",
+        "bonuses and rewards", "bonuses", "rewards and bonuses",
+    }
+
+    def flush():
+        nonlocal bucket
+        if current and bucket:
+            result.append((current, unique(bucket)))
+        bucket = []
+
+    for raw in lines:
+        line = clean(raw)
+        low = strip_markup(line).casefold().rstrip(":").strip()
+        if low in stop_heads:
+            flush()
+            current = None
+            continue
+
+        group = vehicle_group(line)
+        if group:
+            flush()
+            current = group
+            remainder = re.sub(r"^.*?:\s*", "", line).strip()
+            if remainder and remainder.casefold() != group.casefold():
+                bucket.extend([clean(x) for x in remainder.split(",") if clean(x)])
+            continue
+
+        if current:
+            match = re.match(r"^(.+?)\s*\(([^)]*)\)\s*$", line)
+            if match:
+                name = clean(match.group(1))
+                # Avoid obvious non-vehicle navigation/footer text.
+                if len(name) <= 80 and not any(marker in name.casefold() for marker in (
+                    "comments", "add your", "there are currently", "more gta online",
+                    "games,", "gta vi", "privacy policy", "copyright",
+                )):
+                    bucket.append(name)
+                continue
+            # Some live versions put several vehicle names on one line separated by commas.
+            if "," in line and len(line) <= 250 and not any(mark in low for mark in (
+                "this week", "news", "guide", "comment", "article",
+            )):
+                bucket.extend([clean(x) for x in line.split(",") if clean(x)])
+
+    flush()
+    # A fallback parse should still be recognizably the expected five groups.
+    expected = {
+        "luxury autos", "premium deluxe motorsport",
+        "hao's premium test ride", "ls car meet test rides", "lucky wheel",
+    }
+    return [(group, items) for group, items in result if group.casefold() in expected and items]
+
+
 def parse_gifts(sections, full_text):
     out = []
     free_text = " ".join(sections.get("free", []))
@@ -456,13 +516,7 @@ def parse_challenges(lines):
                     break
 
         text = re.sub(
-            r"^Place in the Top 4.*?Pfister Neon$",
-            "Platz unter den Top 4 in der LS Car Meet Series für den Pfister Neon",
-            text,
-            flags=re.I,
-        )
-        text = re.sub(
-            r"^Place Top 4.*?Pfister Neon$",
+            r"^Place(?: in the)? Top 4.*?Pfister Neon(?:\s*\([^)]*\))?$",
             "Platz unter den Top 4 in der LS Car Meet Series für den Pfister Neon",
             text,
             flags=re.I,
@@ -603,6 +657,12 @@ def make_wednesday_data(weekly_text, gta_plus_text):
         "challenges": parse_challenges(sec.get("challenges", [])),
         "rotating": parse_rotating(sec.get("rotating", [])),
     }
+    if not data["vehicles"]:
+        fallback_vehicles = parse_vehicles_from_full_text(weekly_text)
+        if fallback_vehicles:
+            data["vehicles"] = fallback_vehicles
+            print(f"Fahrzeug-Fallback: {len(fallback_vehicles)} Gruppen erkannt.")
+
     core = sum(bool(data[key]) for key in ("bonuses", "vehicles", "discounts", "gifts", "challenges"))
     if core < 4:
         raise RuntimeError(f"iGTA-Parser hat nur {core}/5 Kernbereiche erkannt. Nichts wird gepostet.")
@@ -843,7 +903,7 @@ def fact_concepts(fact):
     return concepts
 
 
-def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set):
+def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set, article_title=""):
     """Return only genuinely NEW Rockstar information compared with Wednesday.
 
     Anything that belongs to a topic already reported Wednesday is blocked unless the
@@ -853,6 +913,17 @@ def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set):
     """
     known = [clean(x).casefold() for x in (known_facts or [])]
     known_concepts_set = set(known_concepts_set or set())
+    title_concepts = fact_concepts(article_title)
+    title_has_explicit_change = any(
+        word in clean(article_title).casefold()
+        for word in (
+            "changed", "change", "updated", "update", "adjusted", "adjustment",
+            "increased", "decreased", "reduced", "removed", "replaced",
+            "changed to", "from now on", "geändert", "aktualisiert",
+            "angepasst", "erhöht", "gesenkt", "reduziert", "entfernt",
+            "ersetzt", "ab jetzt",
+        )
+    )
     out = []
 
     signal_words = (
@@ -891,12 +962,26 @@ def filter_new_rockstar_facts(candidates, known_facts, known_concepts_set):
         if concepts & known_concepts_set and not explicit_change:
             continue
 
+        # If the Rockstar article itself is about a topic already covered Wednesday,
+        # be conservative and suppress ordinary article copy as well. A clearly
+        # stated change is still allowed through. This prevents an entire article
+        # from being mistaken for eight separate "new" facts.
+        if title_concepts & known_concepts_set and not title_has_explicit_change and not explicit_change:
+            if not concepts or concepts & known_concepts_set:
+                continue
+
         ft = normalized_tokens(fact)
         duplicate = False
         for old in known:
             ot = normalized_tokens(old)
-            overlap = len(ft & ot) / max(1, len(ft))
-            if len(ft) >= 5 and overlap >= 0.72:
+            if len(ft) < 4 or len(ot) < 4:
+                continue
+            common = len(ft & ot)
+            overlap_fact = common / max(1, len(ft))
+            overlap_known = common / max(1, len(ot))
+            # Catch both close rewrites and longer Rockstar sentences that merely
+            # add dates/context to something Wednesday already reported.
+            if common >= 4 and (overlap_fact >= 0.62 or overlap_known >= 0.72):
                 duplicate = True
                 break
         if duplicate and not explicit_change:
@@ -1068,7 +1153,7 @@ async def run_thursday(known_data=None):
     known_facts = wednesday_facts(known_data) if known_data is not None else state.get("wednesday_facts", [])
     known_set = known_concepts(known_data) if known_data is not None else set(state.get("wednesday_concepts", []))
     candidates = rockstar_candidates(article["title"], article["body"])
-    new_facts = filter_new_rockstar_facts(candidates, known_facts, known_set)
+    new_facts = filter_new_rockstar_facts(candidates, known_facts, known_set, article["title"])
     print(f"Rockstar: {len(candidates)} Kandidaten | {len(new_facts)} neu gegenüber Mittwoch")
 
     # Donnerstag veröffentlicht ausschließlich echte Änderungen gegenüber Mittwoch.
@@ -1226,13 +1311,19 @@ def self_test():
     assert "Tactical SMG" not in post
     assert "Double Barrel Shotgun" not in post
     assert any(name == "Time Trial" and text == "Sawmill" for name, text in data["challenges"])
+    assert any(name == "LS Car Meet Prize Ride" and "Platz unter den Top 4" in text for name, text in data["challenges"])
 
     known = known_concepts(data)
     candidates = rockstar_candidates(
         "GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar",
         clean_rockstar_lines(ROCK_FIXTURE),
     )
-    assert filter_new_rockstar_facts(candidates, wednesday_facts(data), known) == []
+    assert filter_new_rockstar_facts(
+        candidates,
+        wednesday_facts(data),
+        known,
+        "GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar",
+    ) == []
 
     exact_live_like = [
         "GTA+ members can get one week of early access to the new Pegassi Horus supercar.",
@@ -1275,7 +1366,56 @@ def self_test():
     print(f"Rotierende Inhalte: {len(data['rotating'])}")
 
 
+def quick_test():
+    """Fast offline regression test: no web requests, no Discord, no state changes."""
+    data = make_wednesday_data(WED_FIXTURE, GTA_FIXTURE)
+    post = format_wednesday(data, "https://example.invalid/article")
+
+    assert any(
+        name == "LS Car Meet Prize Ride" and
+        "Platz unter den Top 4" in text and
+        "Pfister Neon" in text
+        for name, text in data["challenges"]
+    )
+    assert any(name == "Time Trial" and text == "Sawmill" for name, text in data["challenges"])
+    assert "Double Barrel Shotgun" not in post
+    assert "Tactical SMG" not in post
+
+    known = known_concepts(data)
+    candidates = rockstar_candidates(
+        "GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar",
+        clean_rockstar_lines(ROCK_FIXTURE),
+    )
+    new_facts = filter_new_rockstar_facts(
+        candidates,
+        wednesday_facts(data),
+        known,
+        "GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar",
+    )
+
+    assert new_facts == [], f"Erwartet 0 neue Donnerstag-Fakten, erhalten: {new_facts}"
+
+    print("========================================")
+    print("LS-INSIDER – SCHNELLTEST")
+    print("========================================")
+    print("✅ Mittwoch: Prize Ride korrekt auf Deutsch")
+    print("✅ Mittwoch: Time Trial = Sawmill")
+    print("✅ Mittwoch: Keine Gun-Van-Waffen im Time Trial")
+    print("✅ Donnerstag: Horus/Cluckin' Bell/Biker/500k/Shark Cards = bereits bekannt")
+    print(f"✅ Donnerstag: {len(new_facts)} neue Informationen")
+    print("✅ Keine Web-Abfragen")
+    print("✅ Keine Discord-Nachrichten")
+    print("✅ Kein Status gespeichert")
+    print("========================================")
+    print("SCHNELLTEST OK")
+
+
+
 async def main():
+    if QUICK_TEST:
+        quick_test()
+        return
+
     self_test()
     now = datetime.now(VIENNA)
     print("========================================")
