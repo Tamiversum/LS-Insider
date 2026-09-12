@@ -594,43 +594,45 @@ def parse_gun_van(lines):
 
 
 def parse_gta_plus_benefits(text):
+    """Extract the current GTA+ benefits from the dedicated GTA+ article.
+
+    The function deliberately uses topic-based rules instead of the page's HTML
+    hierarchy. This is more tolerant of small layout changes and also gives
+    Thursday a stable set of facts to compare against.
+    """
     if not text:
         return []
 
-    lines = text_lines(text)
-    blob = " ".join(lines).casefold()
-    if "gta+" not in blob and "gta +" not in blob:
-        return []
-
+    blob = clean(text).casefold()
     result = []
 
-    def has(*terms):
-        return all(term.casefold() in blob for term in terms)
+    def has_any(*terms):
+        return any(term.casefold() in blob for term in terms)
 
     rules = [
-        (has("pegassi horus") and has("early access"),
+        (has_any("pegassi horus") and has_any("early access", "early-access", "vorabzugang"),
          "Pegassi Horus: 1 Woche Early Access für GTA+ Mitglieder; kostenlos beim Vinewood Car Club mit exklusiver Velvet-Iris-Lackierung."),
-        (("chameleon" in blob or "chamäleon" in blob) and ("free" in blob or "kostenlos" in blob),
-         "Kostenlose Chameleon-Lackierungen und passende Chameleon-Felgenfarbe."),
-        ("bigness" in blob and ("clothing" in blob or "kleidung" in blob),
-         "Kostenlose Bigness-Kleidung."),
-        (("cluckin' bell" in blob or "cluckin bell" in blob) and ("2x gta$" in blob or "double gta$" in blob),
-         "2X GTA$ für den ersten wöchentlichen Abschluss des Cluckin' Bell Farm Raid."),
-        ("60% off" in blob and "biker" in blob,
+        (has_any("chameleon", "chamäleon") and has_any("free", "kostenlos"),
+         "Kostenlose Chameleon-Lackierung und Chameleon-Felgenfarbe für GTA+ Mitglieder."),
+        (has_any("bigness") and has_any("clothing", "kleidung"),
+         "Kostenlose Bigness-Kleidung für GTA+ Mitglieder."),
+        (has_any("cluckin' bell", "cluckin bell") and has_any("2x gta$", "2x gta$ on", "double gta$"),
+         "2X GTA$ für das erste wöchentliche Finale des Cluckin' Bell Farm Raid."),
+        (has_any("60% off") and has_any("biker", "biker businesses"),
          "60% Rabatt auf Biker-Unternehmen sowie deren Upgrades und Anpassungen für GTA+ Mitglieder."),
-        (("cocaine" in blob or "kokain" in blob) and ("doubled" in blob or "double" in blob or "doppelte" in blob),
-         "Doppelte Produktionsgeschwindigkeit für Kokain-Betriebe von GTA+ Mitgliedern."),
-        ("3x gta$" in blob and "bike service" in blob,
-         "3X GTA$ und RP für Bike-Service-Arbeiten im Motorrad-Tuningbereich des Clubhauses."),
-        ("50% off" in blob and "nagasaki" in blob,
-         "50% Rabatt auf alle Nagasaki-Motorräder."),
-        (("gta$500,000" in blob or "500,000 gta$" in blob) and ("monthly" in blob or "monat" in blob),
-         "GTA$500.000 werden GTA+ Mitgliedern monatlich automatisch gutgeschrieben."),
-        ("15%" in blob and ("cash card" in blob or "cashcard" in blob or "shark card" in blob),
+        (has_any("cocaine", "kokain") and has_any("doubled", "double", "doppelte", "doppelt"),
+         "Doppelte Produktionsgeschwindigkeit im Kokain-Labor für Biker-Unternehmen von GTA+ Mitgliedern."),
+        (has_any("3x gta$ and rp", "3x gta$", "3x gta$") and has_any("bike service", "motorrad-service", "motorcycle service"),
+         "3X GTA$ und RP für Bike-Service-Missionen für GTA+ Mitglieder."),
+        (has_any("50% off") and has_any("nagasaki"),
+         "50% Rabatt auf Nagasaki-Motorräder."),
+        (has_any("gta$500,000", "500,000 gta$", "500000 gta$") and has_any("monthly", "monat", "month"),
+         "GTA$500.000 werden GTA+ Mitgliedern monatlich gutgeschrieben."),
+        (has_any("15%") and has_any("cash card", "cashcard", "shark card"),
          "Spezielle GTA+ CashCards bieten 15% Bonus-GTA$."),
-        ("vinewood club app" in blob,
+        (has_any("vinewood club app"),
          "Zugang zur Vinewood Club App als Teil der GTA+ Vorteile."),
-        ("games library" in blob or "gta+ games library" in blob,
+        (has_any("games library", "gta+ games library"),
          "Zugang zur wechselnden GTA+ Games Library."),
     ]
 
@@ -639,6 +641,7 @@ def parse_gta_plus_benefits(text):
             result.append(message)
 
     return unique(result)
+
 
 def sort_discount_groups(groups):
     def sort_key(entry):
@@ -705,22 +708,42 @@ def known_concepts_from_wednesday(data):
         low = fact.casefold()
         if "pegassi horus" in low:
             concepts.add("horus")
-        if "gta+" in low:
+        if "gta+" in low or "gta plus" in low:
             concepts.add("gta_plus")
         if "early access" in low or "vorabzugang" in low:
             concepts.add("early_access")
+        if "chameleon" in low or "chamäleon" in low:
+            concepts.add("chameleon")
+        if "bigness" in low:
+            concepts.add("bigness")
+        if "cluckin' bell" in low or "cluckin bell" in low:
+            concepts.add("cluckin_bell")
+        if "60%" in low and "biker" in low:
+            concepts.add("biker_discount")
+        if any(x in low for x in ("cocaine", "kokain")) and any(x in low for x in ("doubled", "double", "doppelte", "doppelt")):
+            concepts.add("cocaine_speed")
+        if "bike-service" in low or "bike service" in low or "motorrad-service" in low:
+            concepts.add("bike_service")
+        if "50%" in low and "nagasaki" in low:
+            concepts.add("nagasaki_discount")
+        if "500.000" in low or "500,000" in low:
+            concepts.add("monthly_500k")
+        if "cashcard" in low or "cash card" in low or "shark card" in low:
+            concepts.add("cashcard_bonus")
+        if "vinewood club app" in low:
+            concepts.add("vinewood_app")
+        if "games library" in low:
+            concepts.add("games_library")
         if any(x in low for x in ("vehicle", "fahrzeug", "supercar", "supersportwagen", "motorcycle", "motorrad", "auto")):
             concepts.add("vehicle")
         if any(x in low for x in ("bonus", "boni", "2x gta$", "3x gta$", "auszahlung", "biker-boni")):
             concepts.add("bonus")
         if any(x in low for x in ("reward", "belohnung", "kostenlos", "free", "clothing", "kleidung")):
             concepts.add("reward")
-        if any(x in low for x in ("bigness", "tee", "cap", "kleidung")):
+        if any(x in low for x in ("clothing", "kleidung", "tee", "cap", "bigness")):
             concepts.add("clothing")
         if any(x in low for x in ("biker-boni", "biker bonuses", "biker bonus", "biker", "biker-unternehmen")):
             concepts.add("biker")
-        if "chameleon" in low:
-            concepts.add("chameleon")
     return concepts
 
 
@@ -1012,32 +1035,63 @@ def filter_new_rockstar_facts(candidates, known_concepts, known_facts):
         re.sub(r"\s+", " ", clean(str(x))).casefold()
         for x in (known_facts or [])
     }
+
+    def topic_tags(fact):
+        low = clean(fact).casefold()
+        tags = set()
+        if "pegassi horus" in low:
+            tags.add("horus")
+        if "early access" in low or "vorabzugang" in low:
+            tags.add("early_access")
+        if "chameleon" in low or "chamäleon" in low:
+            tags.add("chameleon")
+        if "bigness" in low:
+            tags.add("bigness")
+        if "cluckin' bell" in low or "cluckin bell" in low:
+            tags.add("cluckin_bell")
+        if "60%" in low and "biker" in low:
+            tags.add("biker_discount")
+        if any(x in low for x in ("cocaine", "kokain")) and any(x in low for x in ("doubled", "double", "doppelte", "doppelt")):
+            tags.add("cocaine_speed")
+        if any(x in low for x in ("bike service", "bike-service", "motorrad-service", "motorcycle service")):
+            tags.add("bike_service")
+        if "50%" in low and "nagasaki" in low:
+            tags.add("nagasaki_discount")
+        if "500,000 gta$" in low or "gta$500,000" in low or "500.000" in low:
+            tags.add("monthly_500k")
+        if "cash card" in low or "cashcard" in low or "shark card" in low:
+            tags.add("cashcard_bonus")
+        if "vinewood club app" in low:
+            tags.add("vinewood_app")
+        if "games library" in low:
+            tags.add("games_library")
+        return tags
+
     out = []
     for fact in unique(candidates):
         key = re.sub(r"\s+", " ", clean(fact)).casefold()
         if key in known_fact_keys:
             continue
 
-        tags = concept_tags(fact)
-        specific = tags - {"vehicle", "bonus", "reward", "clothing"}
+        low = clean(fact).casefold()
+        tags = topic_tags(fact)
+        change_markers = (
+            "newly added", "new feature", "newly available", "just added",
+            "recently added", "brand-new update", "changed", "change",
+            "updated", "geändert", "added", "hinzugefügt",
+        )
 
-        # Wenn ein Rockstar-Satz ausschließlich ein Thema beschreibt, das
-        # am Mittwoch bereits vollständig bekannt war, gilt er nicht als neu.
-        if specific and specific.issubset(known_concepts):
+        # A specific topic already reported Wednesday is not new merely because
+        # Rockstar phrased it differently on Thursday.
+        if tags & known_concepts and not any(marker in low for marker in change_markers):
             continue
 
-        # Besonders wichtig für GTA+-/Fahrzeug-Artikel: Derselbe konkrete
-        # Gegenstand soll nicht allein wegen einer anders formulierten
-        # Zusammenfassung am Donnerstag erneut gemeldet werden.
-        low = fact.casefold()
-        if "pegassi horus" in low and "horus" in known_concepts:
-            continue
-        if "gta+" in low and "gta_plus" in known_concepts and not re.search(r"\b(?:new|neu|changed|geändert|updated|\d+%)\b", low):
-            if any(k in low for k in ("early access", "vorabzugang", "bigness", "chameleon", "chamäleon", "biker", "gta$500,000", "500,000 gta$")):
-                continue
-
+        # Broader category-only concepts are not enough to suppress a specific
+        # new item. For example, a new motorcycle may still be news after
+        # generic vehicle information appeared Wednesday.
         out.append(fact)
     return out
+
 
 def classify_rockstar(title, facts):
     fact_blob = " ".join(facts).casefold()
