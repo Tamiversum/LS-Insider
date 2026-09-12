@@ -14,7 +14,7 @@ ROCKSTAR_URL = "https://www.rockstargames.com/de/newswire?tag_id=735"
 STATE_FILE = "weekly_state.json"
 VIENNA = ZoneInfo("Europe/Vienna")
 TEST_MODE = os.getenv("LS_INSIDER_TEST_MODE", "false").lower() == "true"
-DISCORD_LIMIT = 1950
+DISCORD_LIMIT = 2000
 TIMEOUT_MS = 60000
 
 MONTH_NAMES = {
@@ -813,22 +813,61 @@ def format_wednesday(data, source_url):
 
 
 def split_message(text):
+    """Teilt an sinnvollen Blockgrenzen und trennt nie die Quellenrubrik."""
     if len(text) <= DISCORD_LIMIT:
         return [text]
 
     lines = text.splitlines()
+
+    # Die Quellenrubrik immer als untrennbaren Block behandeln.
+    units = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() == "🔗 **QUELLE / VOLLSTÄNDIGER ARTIKEL**":
+            block = [lines[i]]
+            if i + 1 < len(lines):
+                block.append(lines[i + 1])
+            units.append(block)
+            i += 2
+        else:
+            units.append([lines[i]])
+            i += 1
+
     messages = []
     current = []
-    for line in lines:
-        candidate = "\n".join(current + [line]).strip()
-        if len(candidate) <= DISCORD_LIMIT:
-            current.append(line)
+
+    def current_text(extra=None):
+        parts = current + ([] if extra is None else [extra])
+        return "\n".join(parts).strip()
+
+    for unit in units:
+        unit_text = "\n".join(unit).strip()
+        if not unit_text:
+            if current and current[-1] != "":
+                current.append("")
             continue
+
+        candidate = (current_text() + "\n" + unit_text).strip() if current else unit_text
+        if len(candidate) <= DISCORD_LIMIT:
+            current.extend(unit)
+            continue
+
         if current:
+            # Leerzeilen am Ende vermeiden.
+            while current and not current[-1].strip():
+                current.pop()
             messages.append("\n".join(current).strip())
-        current = [line]
+
+        # Ein einzelner Block darf nie das Limit überschreiten.
+        if len(unit_text) > DISCORD_LIMIT:
+            raise RuntimeError(f"Unteilbarer Ausgabeblock ist zu lang: {len(unit_text)} Zeichen")
+        current = list(unit)
+
     if current:
+        while current and not current[-1].strip():
+            current.pop()
         messages.append("\n".join(current).strip())
+
     return messages
 
 
@@ -1046,42 +1085,40 @@ def concept_tags(text):
 
 
 def filter_new_rockstar_facts(candidates, known_concepts, known_facts):
+    """Vergleicht Rockstar-Fakten konservativ gegen den Mittwoch-Stand.
+
+    Priorität: Nichts erneut als "neu" melden, wenn dasselbe konkrete Thema
+    bereits am Mittwoch erwähnt wurde. Eine tatsächlich neue Sache darf dennoch
+    durchkommen.
+    """
     known_concepts = set(known_concepts or [])
     known_fact_keys = {
         re.sub(r"\s+", " ", clean(str(x))).casefold()
         for x in (known_facts or [])
     }
 
-    def topic_tags(fact):
+    strong_topics = {
+        "horus": ("pegassi horus",),
+        "chameleon": ("chameleon", "chamäleon", "cyan/red flip", "cyan-red flip", "cyan red flip"),
+        "bigness": ("bigness",),
+        "cluckin_bell": ("cluckin' bell", "cluckin bell"),
+        "biker_discount": ("60%", "biker business", "biker-unternehmen", "biker businesses"),
+        "cocaine_speed": ("cocaine production", "kokain-labor", "cocaine laboratory"),
+        "bike_service": ("bike service", "bike-service", "motorrad-service"),
+        "nagasaki_discount": ("50%", "nagasaki"),
+        "monthly_500k": ("500,000", "500.000", "500k"),
+        "cashcard_bonus": ("cash card", "cashcard", "shark card"),
+        "vinewood_app": ("vinewood club app",),
+        "games_library": ("games library",),
+    }
+
+    def matched_strong_topics(fact):
         low = clean(fact).casefold()
-        tags = set()
-        if "pegassi horus" in low:
-            tags.add("horus")
-        if "early access" in low or "vorabzugang" in low:
-            tags.add("early_access")
-        if "chameleon" in low or "chamäleon" in low:
-            tags.add("chameleon")
-        if "bigness" in low:
-            tags.add("bigness")
-        if "cluckin' bell" in low or "cluckin bell" in low:
-            tags.add("cluckin_bell")
-        if "60%" in low and "biker" in low:
-            tags.add("biker_discount")
-        if any(x in low for x in ("cocaine", "kokain")) and any(x in low for x in ("doubled", "double", "doppelte", "doppelt")):
-            tags.add("cocaine_speed")
-        if any(x in low for x in ("bike service", "bike-service", "motorrad-service", "motorcycle service")):
-            tags.add("bike_service")
-        if "50%" in low and "nagasaki" in low:
-            tags.add("nagasaki_discount")
-        if "500,000 gta$" in low or "gta$500,000" in low or "500.000" in low:
-            tags.add("monthly_500k")
-        if "cash card" in low or "cashcard" in low or "shark card" in low:
-            tags.add("cashcard_bonus")
-        if "vinewood club app" in low:
-            tags.add("vinewood_app")
-        if "games library" in low:
-            tags.add("games_library")
-        return tags
+        matched = set()
+        for topic, needles in strong_topics.items():
+            if any(needle.casefold() in low for needle in needles):
+                matched.add(topic)
+        return matched
 
     out = []
     for fact in unique(candidates):
@@ -1090,22 +1127,22 @@ def filter_new_rockstar_facts(candidates, known_concepts, known_facts):
             continue
 
         low = clean(fact).casefold()
-        tags = topic_tags(fact)
-        change_markers = (
-            "newly added", "new feature", "newly available", "just added",
-            "recently added", "brand-new update", "changed", "change",
-            "updated", "geändert", "added", "hinzugefügt",
-        )
+        tags = matched_strong_topics(fact)
 
-        # A specific topic already reported Wednesday is not new merely because
-        # Rockstar phrased it differently on Thursday.
-        if tags & known_concepts and not any(marker in low for marker in change_markers):
+        # Bereits bekannte konkrete Themen immer unterdrücken.
+        if tags & {x for x in strong_topics if x in known_concepts}:
             continue
 
-        # Broader category-only concepts are not enough to suppress a specific
-        # new item. For example, a new motorcycle may still be news after
-        # generic vehicle information appeared Wednesday.
-        out.append(fact)
+        # Falls ein Konzept noch nicht im Mittwoch-Set steht, aber der konkrete
+        # Fakt selbst praktisch identisch zu einem bekannten Satz ist, ebenfalls
+        # nicht erneut melden.
+        for known in known_fact_keys:
+            if len(known) >= 45 and (known in key or key in known):
+                break
+        else:
+            # Allgemeine Wörter wie "new" reichen NICHT für einen Neu-Status.
+            out.append(fact)
+
     return out
 
 
@@ -1423,6 +1460,9 @@ def self_test():
     )
     messages = split_message(post)
     assert all(len(x) <= DISCORD_LIMIT for x in messages)
+    assert messages[-1].startswith("━━━━━━━━━━━━━━━━━━━━") or "🔗 **QUELLE / VOLLSTÄNDIGER ARTIKEL**" in messages[-1]
+    assert "🔗 **QUELLE / VOLLSTÄNDIGER ARTIKEL**" in messages[-1]
+    assert messages[-1].strip().endswith("https://www.igrandtheftauto.com/gtaonline/news/this-week-in-gta-online-september-10-2026>")
     assert "🚗 **NEUES AUF DEN STRASSEN**" in post
     assert "**Luxury Autos:** Vapid FMJ MK V, Grotti GT750" in post
     assert "**30% RABATT:**" in post
