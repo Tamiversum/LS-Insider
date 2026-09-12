@@ -600,11 +600,11 @@ def translate_rotating_line(line):
 
 
 def parse_gta_plus_benefits(text):
-    """Extract the current GTA+ benefits from the dedicated GTA+ article.
+    """Liest den separaten GTA+-Artikel als eigenen Textblock.
 
-    The function deliberately uses topic-based rules instead of the page's HTML
-    hierarchy. This is more tolerant of small layout changes and also gives
-    Thursday a stable set of facts to compare against.
+    Wichtig: Wir versuchen hier nicht mehr, GTA+ aus dem normalen Wochenartikel
+    herauszuraten. Der gesamte GTA+-Artikel wird geholt; danach werden nur die
+    bekannten GTA+-Themen anhand ihres tatsächlichen Artikeltexts erkannt.
     """
     if not text:
         return []
@@ -612,37 +612,37 @@ def parse_gta_plus_benefits(text):
     blob = clean(text).casefold()
     result = []
 
-    def has_any(*terms):
+    def has(*terms):
         return any(term.casefold() in blob for term in terms)
 
-    rules = [
-        (has_any("pegassi horus") and has_any("early access", "early-access", "vorabzugang"),
+    checks = [
+        (has("pegassi horus") and has("early access", "vorabzugang"),
          "Pegassi Horus: 1 Woche Early Access für GTA+ Mitglieder; kostenlos beim Vinewood Car Club mit exklusiver Velvet-Iris-Lackierung."),
-        (has_any("chameleon", "chamäleon") and has_any("free", "kostenlos"),
+        (has("cyan/red flip", "chameleon") and has("free", "kostenlos"),
          "Kostenlose Chameleon-Lackierung und Chameleon-Felgenfarbe für GTA+ Mitglieder."),
-        (has_any("bigness") and has_any("clothing", "kleidung"),
-         "Kostenlose Bigness-Kleidung für GTA+ Mitglieder."),
-        (has_any("cluckin' bell", "cluckin bell") and has_any("2x gta$", "double gta$", "first weekly completion", "first completion of scene of the crime"),
+        (has("bigness patchwork", "bigness") and has("clothing", "kleidung"),
+         "Kostenlose Bigness-Patchwork-Kleidung: Bigness Patchwork Revere Collar Shirt und Bigness Patchwork Jeans."),
+        (has("cluckin' bell farm raid", "cluckin bell farm raid") and has("2x gta$", "double gta$"),
          "2X GTA$ für den ersten wöchentlichen Abschluss von „Scene of the Crime“ im Cluckin' Bell Farm Raid."),
-        (has_any("60% off") and has_any("biker", "biker businesses"),
+        (has("60% off", "60 % off") and has("biker businesses", "biker business"),
          "60% Rabatt auf Biker-Unternehmen sowie deren Upgrades und Anpassungen für GTA+ Mitglieder."),
-        (has_any("cocaine", "kokain") and has_any("doubled", "double", "doppelte", "doppelt"),
+        (has("cocaine production") and has("doubled", "double"),
          "Doppelte Produktionsgeschwindigkeit im Kokain-Labor für Biker-Unternehmen von GTA+ Mitgliedern."),
-        (has_any("3x gta$ and rp", "3x gta$", "triple") and has_any("bike service", "motorcycle service"),
-         "3X GTA$ und RP für Bike-Service-Missionen für GTA+ Mitglieder."),
-        (has_any("50% off") and has_any("nagasaki"),
-         "50% Rabatt auf Nagasaki-Motorräder."),
-        (has_any("gta$500,000", "500,000 gta$", "500000 gta$") and has_any("monthly", "monat", "month"),
-         "GTA$500.000 werden GTA+ Mitgliedern monatlich gutgeschrieben."),
-        (has_any("15%") and has_any("cash card", "cashcard", "shark card"),
-         "Spezielle GTA+ CashCards bieten 15% Bonus-GTA$."),
-        (has_any("vinewood club app"),
-         "Zugang zur Vinewood Club App als Teil der GTA+ Vorteile."),
-        (has_any("games library", "gta+ games library"),
-         "Zugang zur wechselnden GTA+ Games Library."),
+        (has("3x gta$ and rp", "3x gta$", "triple") and has("bike service"),
+         "3X GTA$ und RP für Bike-Service-Arbeiten für GTA+ Mitglieder."),
+        (has("50% off all nagasaki", "50 % off all nagasaki"),
+         "50% Rabatt auf alle Nagasaki-Motorräder: Shinobi, Shotaro, Stryder, Chimera und BF400."),
+        (has("gta$500,000", "500,000 gta$") and has("monthly", "month"),
+         "GTA$500.000 werden GTA+ Mitgliedern monatlich zum Abrechnungszeitpunkt gutgeschrieben."),
+        (has("15% bonus gta$", "15% gta$ bonus", "15% bonus", "15 % bonus") and has("shark cards", "shark card", "cash cards", "cashcard"),
+         "Spezielle GTA+ Shark Cards bieten 15% Bonus-GTA$."),
+        (has("vinewood club app"),
+         "Zugang zur Vinewood Club App mit Funktionen zur Verwaltung von Unternehmen, Einnahmen und angeforderten Fahrzeugen."),
+        (has("gta+ games library", "games library"),
+         "Zugang zur wechselnden GTA+ Games Library mit Rockstar-Spielen, solange sie über den Service verfügbar sind."),
     ]
 
-    for condition, message in rules:
+    for condition, message in checks:
         if condition:
             result.append(message)
 
@@ -867,59 +867,56 @@ async def fetch_latest_igta_article():
 
 
 async def fetch_igta_gta_plus():
-    try:
-        listing_text, listing_html = await fetch_page(IGTA_NEWS_URL, wait_ms=2500)
-    except Exception as exc:
-        print(f"iGTA: GTA+-Listing nicht abrufbar: {exc}")
-        return "", ""
+    """Holt den aktuellen GTA+-Artikel separat und möglichst direkt.
 
+    Statt mehrere Kandidaten auszuwerten, suchen wir zuerst einen GTA+-Artikel
+    auf der News-Seite und laden anschließend genau diesen Artikel. Falls die
+    aktuelle Horus-Meldung noch aktiv ist, funktioniert zusätzlich der bekannte
+    direkte Link als schneller Weg.
+    """
+    direct_url = (
+        "https://www.igrandtheftauto.com/gtaonline/news/"
+        "gta-members-enjoy-one-week-of-early-access-to-the-new-pegassi-horus-supercar"
+    )
+
+    # 1) Direktversuch für den aktuellen GTA+-Artikel.
+    try:
+        text, html_text = await fetch_page(direct_url, wait_ms=4500)
+        low = text.casefold()
+        if "gta+ members" in low and "pegassi horus" in low and len(text) > 1200:
+            print("iGTA: GTA+-Artikel direkt gefunden.")
+            return text, direct_url
+    except Exception as exc:
+        print(f"iGTA: direkter GTA+-Artikel fehlgeschlagen: {exc}")
+
+    # 2) Einfacher Fallback: Listing öffnen und den ersten passenden GTA+-Link nehmen.
+    listing_text, listing_html = await fetch_page(IGTA_NEWS_URL, wait_ms=3000)
     candidates = unique(re.findall(
-        r"https://www\.igrandtheftauto\.com/gtaonline/news/[^\s\"<>]+",
+        r"https://www\.igrandtheftauto\.com/gtaonline/news/[\w\-]+",
         listing_html or "",
         flags=re.I,
     ))
 
-    scored = []
-    for url in candidates:
-        low = url.casefold()
-        score = 0
-        if "gta-members" in low:
-            score += 10
-        if "pegassi-horus" in low:
-            score += 10
-        if "early-access" in low:
-            score += 8
-        if "gta-plus" in low:
-            score += 6
-        if score:
-            scored.append((score, url))
+    preferred = [
+        url for url in candidates
+        if any(marker in url.casefold() for marker in (
+            "gta-members-", "gta-plus-", "pegassi-horus"
+        ))
+    ]
 
-    scored.sort(reverse=True)
-    best_text = ""
-    best_url = ""
-    best_score = -1
-
-    for base_score, url in scored[:8]:
+    for url in preferred[:5]:
         try:
-            text, _ = await fetch_page(url, wait_ms=3000)
+            text, _ = await fetch_page(url, wait_ms=4000)
             low = text.casefold()
-            relevance = base_score
-            if "gta+" in low or "gta plus" in low:
-                relevance += 5
-            if "pegassi horus" in low:
-                relevance += 8
-            if len(text) > 1200:
-                relevance += 3
-            if relevance > best_score:
-                best_score = relevance
-                best_text = text
-                best_url = url
+            if "gta+" in low and "pegassi" in low and len(text) > 1000:
+                print(f"iGTA: GTA+-Artikel über News-Liste gefunden: {url}")
+                return text, url
         except Exception as exc:
-            print(f"iGTA: GTA+-Artikel fehlgeschlagen: {url} | {exc}")
+            print(f"iGTA: GTA+-Fallback fehlgeschlagen: {url} | {exc}")
 
-    if best_text:
-        return best_text, best_url
-
+    # Letzter Fallback: Listing selbst zurückgeben, damit der Hauptparser nicht
+    # abstürzt. Der Aufrufer kann den GTA+-Block dann leer lassen.
+    print("iGTA: Kein separater GTA+-Artikel sicher gefunden.")
     return listing_text, ""
 
 
