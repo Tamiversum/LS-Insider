@@ -1,69 +1,61 @@
 name: GTA Eventwoche
 
 on:
-workflow_dispatch:
-inputs:
-test_mode:
-description: "Manuellen Test ausführen"
-required: false
-type: boolean
-default: false
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "Manuellen Test ausführen"
+        required: false
+        type: boolean
+        default: false
 
-schedule:
-# Mittwoch und Donnerstag: jede volle Stunde von 15:00 bis 23:00 Uhr Wiener Zeit
-- cron: "0 15-23 * * 3,4"
-timezone: "Europe/Vienna"
-
-```
-# Freitag: einmal täglich um 15:00 Uhr Wiener Zeit
-- cron: "0 15 * * 5"
-  timezone: "Europe/Vienna"
-```
+  schedule:
+    # Mittwoch bis Freitag: jede volle Stunde von 15:00 bis 23:00 Uhr Wiener Zeit
+    - cron: "0 15-23 * * 3-5"
+      timezone: "Europe/Vienna"
 
 permissions:
-contents: write
+  contents: write
 
 jobs:
-eventwoche:
-runs-on: ubuntu-latest
+  eventwoche:
+    runs-on: ubuntu-latest
 
-```
-steps:
-  - name: Repository laden
-    uses: actions/checkout@v4
-    with:
-      fetch-depth: 0
+    steps:
+      - name: Repository laden
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-  - name: Python einrichten
-    uses: actions/setup-python@v5
-    with:
-      python-version: "3.12"
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-  - name: Abhängigkeiten installieren
-    run: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-  - name: Chromium installieren
-    run: playwright install --with-deps chromium
+      - name: Chromium installieren
+        run: playwright install --with-deps chromium
 
-  - name: LS-Insider starten
-    env:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      LS_INSIDER_TEST_MODE: ${{ inputs.test_mode }}
-    run: python bot.py
+      - name: LS-Insider starten
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          LS_INSIDER_TEST_MODE: ${{ inputs.test_mode }}
+        run: python bot.py
 
-  - name: Status speichern
-    run: |
-      git config user.name "LS-Insider Bot"
-      git config user.email "ls-insider-bot@users.noreply.github.com"
+      - name: Status speichern
+        run: |
+          git config user.name "LS-Insider Bot"
+          git config user.email "ls-insider-bot@users.noreply.github.com"
 
-      git add weekly_state.json
+          git add weekly_state.json
 
-      if git diff --cached --quiet; then
-        echo "ℹ️ Kein neuer Status gespeichert."
-      else
-        git commit -m "Update weekly event state"
-        git push
-      fi
-```
+          if git diff --cached --quiet; then
+            echo "ℹ️ Kein neuer Status gespeichert."
+          else
+            git commit -m "Update weekly event state"
+            git push
+          fi
