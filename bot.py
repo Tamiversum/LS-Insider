@@ -196,7 +196,6 @@ IGTA_HEADING_ALIASES = {
     "discounts": ["discounts", "discount"],
     "vehicles": ["vehicles", "vehicles and showrooms"],
     "challenges": ["challenges", "weekly challenges"],
-    "gunvan": ["gun van inventory", "gun van", "gunvan"],
     "rotating": [
         "other activities", "other activity", "weekly rotating content", "rotating content",
         "additional activities", "other content", "more gta online activities",
@@ -551,48 +550,6 @@ def translate_rotating_line(line):
     return result
 
 
-def parse_gun_van(lines):
-    discounts = {}
-    inventory = []
-
-    for raw in lines:
-        line = clean(raw)
-        if not line:
-            continue
-
-        # Free Gun Van entries, e.g. "Item – Free"
-        free_match = re.search(r"^(.*?)\s*[–—-]\s*free\.?$", line, re.I)
-        if free_match:
-            item = clean(free_match.group(1))
-            if item:
-                discounts.setdefault(0, []).append(item)
-            continue
-
-        # Discounted Gun Van entries, e.g. "Tactical SMG – 40% off"
-        match = re.search(r"^(.*?)\s*[–—-]\s*(\d{1,3})\s*%\s*off(?:\s+for\s+GTA\+\s+Members?)?\.?$", line, re.I)
-        if match:
-            item = clean(match.group(1))
-            pct = int(match.group(2))
-            gta_plus_only = bool(re.search(r"for\s+GTA\+\s+Members?", line, re.I))
-            if gta_plus_only:
-                item += " (GTA+)"
-            discounts.setdefault(pct, []).append(item)
-            continue
-
-        # Any clean inventory line that is not a navigation/header line.
-        if line.casefold() in {"inventory", "gun van inventory"}:
-            continue
-        if line.startswith("#"):
-            continue
-        inventory.append(line)
-
-    ordered_discounts = []
-    for pct in sorted(discounts.keys(), reverse=True):
-        ordered_discounts.append((f"🔫 GUN VAN — {pct}% RABATT", unique(discounts[pct])))
-
-    return ordered_discounts, unique(inventory)
-
-
 def parse_gta_plus_benefits(text):
     """Extract the current GTA+ benefits from the dedicated GTA+ article.
 
@@ -616,13 +573,13 @@ def parse_gta_plus_benefits(text):
          "Kostenlose Chameleon-Lackierung und Chameleon-Felgenfarbe für GTA+ Mitglieder."),
         (has_any("bigness") and has_any("clothing", "kleidung"),
          "Kostenlose Bigness-Kleidung für GTA+ Mitglieder."),
-        (has_any("cluckin' bell", "cluckin bell") and has_any("2x gta$", "2x gta$ on", "double gta$"),
-         "2X GTA$ für das erste wöchentliche Finale des Cluckin' Bell Farm Raid."),
+        (has_any("cluckin' bell", "cluckin bell") and has_any("2x gta$", "double gta$", "first weekly completion", "first completion of scene of the crime"),
+         "2X GTA$ für den ersten wöchentlichen Abschluss von „Scene of the Crime“ im Cluckin' Bell Farm Raid."),
         (has_any("60% off") and has_any("biker", "biker businesses"),
          "60% Rabatt auf Biker-Unternehmen sowie deren Upgrades und Anpassungen für GTA+ Mitglieder."),
         (has_any("cocaine", "kokain") and has_any("doubled", "double", "doppelte", "doppelt"),
          "Doppelte Produktionsgeschwindigkeit im Kokain-Labor für Biker-Unternehmen von GTA+ Mitgliedern."),
-        (has_any("3x gta$ and rp", "3x gta$", "3x gta$") and has_any("bike service", "motorrad-service", "motorcycle service"),
+        (has_any("3x gta$ and rp", "3x gta$", "triple") and has_any("bike service", "motorcycle service"),
          "3X GTA$ und RP für Bike-Service-Missionen für GTA+ Mitglieder."),
         (has_any("50% off") and has_any("nagasaki"),
          "50% Rabatt auf Nagasaki-Motorräder."),
@@ -662,19 +619,17 @@ def make_wednesday_data(weekly_text: str, gta_plus_text: str = ""):
     all_lines = text_lines(weekly_text)
     start, end = week_period()
 
-    gun_van_discount_groups, gun_van_inventory = parse_gun_van(sections.get("gunvan", []))
     data = {
         "headline": detect_event(weekly_text),
         "period": (start, end),
         "intro": extract_intro(weekly_text),
         "bonuses": parse_bonuses(sections.get("bonuses", [])),
         "vehicles": parse_vehicle_groups(sections.get("vehicles", [])),
-        "discounts": sort_discount_groups(parse_discounts(sections.get("discounts", [])) + gun_van_discount_groups),
+        "discounts": sort_discount_groups(parse_discounts(sections.get("discounts", []))),
         "gifts": parse_gifts(sections, weekly_text),
         "gta_plus": parse_gta_plus_benefits(gta_plus_text),
         "challenges": parse_challenges(sections.get("challenges", [])),
         "rotating": parse_rotating(sections.get("rotating", [])),
-        "gun_van": gun_van_inventory,
     }
 
     core = sum(
@@ -698,7 +653,6 @@ def wednesday_facts(data):
     for name, text in data["challenges"]:
         facts.append(f"{name}: {text}")
     facts.extend(data["rotating"])
-    facts.extend(data["gun_van"])
     return unique(facts)
 
 
@@ -783,9 +737,6 @@ def format_wednesday(data, source_url):
 
     if data["rotating"]:
         lines += ["", "📍 **DIESE WOCHE AKTUELL IN LOS SANTOS**"] + [f"• {x}" for x in data["rotating"]]
-
-    if data["gun_van"]:
-        lines += ["", "🔫 **NEUES AUS DEM GUN VAN**", "• Aktuelles Inventar: " + ", ".join(data["gun_van"])]
 
     lines += [
         "",
@@ -952,6 +903,10 @@ def find_rockstar_title(text):
         ):
             if low not in {"gta online", "gta online inhalts-updates"}:
                 preferred.append(line)
+    preferred = [
+        x for x in preferred
+        if not any(noise in x.casefold() for noise in ("inhalts-updates", "newswire", "discover more", "unlock game guides"))
+    ]
     if preferred:
         return max(preferred, key=len)
 
@@ -1097,7 +1052,7 @@ def classify_rockstar(title, facts):
     fact_blob = " ".join(facts).casefold()
     categories = []
 
-    if any(x in fact_blob for x in ("new ", "brand-new", "brand new", "newly", "neu", "early access", "vorabzugang")):
+    if any(x in fact_blob for x in ("brand-new", "brand new", "newly", "neu", "early access", "vorabzugang")):
         categories.append("🆕 **Neu**")
     if any(x in fact_blob for x in ("vehicle", "fahrzeug", "supercar", "supersportwagen", "motorcycle", "motorrad", "car ")):
         categories.append("🚗 **neue Fahrzeugmeldung**")
@@ -1333,16 +1288,6 @@ HSW Time Trial:
 Del Perro Beach to Murietta Heights
 Time Trial:
 Sawmill
-Gun Van Inventory
-Tactical SMG – 40% off
-Railgun – 40% off for GTA+ Members
-Compact EMP Launcher
-Double Barrel Shotgun
-Assault SMG
-Pipe Wrench
-Pipe Bombs
-Proximity Mines
-Sticky Bombs
 Other Activities
 # Rotating Content
 ## The Kortz Center Heist Primary Targets:
@@ -1394,20 +1339,16 @@ def self_test():
         "Luxury Autos", "Premium Deluxe Motorsport", "Hao's Premium Test Ride",
         "LS Car Meet Test Rides", "Lucky Wheel"
     ], data["vehicles"]
-    assert len(data["discounts"]) == 4, data["discounts"]
-    assert [group for group, _ in data["discounts"]] == ["KOSTENLOS", "70% RABATT", "🔫 GUN VAN — 40% RABATT", "30% RABATT"], data["discounts"]
+    assert len(data["discounts"]) == 3, data["discounts"]
+    assert [group for group, _ in data["discounts"]] == ["KOSTENLOS", "70% RABATT", "30% RABATT"], data["discounts"]
     assert any("Grapeseed MC Clubhouse" in item for _, items in data["discounts"] for item in items), data["discounts"]
     assert any("Penaud La Coureuse" in item for item in data["gifts"]), data["gifts"]
     assert any("Bourgeoix Tee" in item for item in data["gifts"]), data["gifts"]
     assert len(data["gta_plus"]) == 12, data["gta_plus"]
     assert len(data["challenges"]) == 5, data["challenges"]
     assert len(data["rotating"]) == 3, data["rotating"]
-    assert len(data["gun_van"]) == 7, data["gun_van"]
-    assert data["gun_van"] == [
-        "Compact EMP Launcher", "Double Barrel Shotgun", "Assault SMG",
-        "Pipe Wrench", "Pipe Bombs", "Proximity Mines", "Sticky Bombs"
-    ], data["gun_van"]
-    
+    assert all("This article has been viewed" not in x for x in data["rotating"])
+    assert all("Share" not in x for x in data["rotating"])
     post = format_wednesday(
         data,
         "https://www.igrandtheftauto.com/gtaonline/news/this-week-in-gta-online-september-10-2026",
