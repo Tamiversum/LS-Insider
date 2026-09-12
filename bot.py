@@ -62,6 +62,14 @@ def save_state(state):
 
 
 def post_to_discord(messages):
+    if TEST_MODE:
+        if isinstance(messages, str):
+            messages = [messages]
+        for index, message in enumerate(messages, 1):
+            print(f"TEST_MODE: Discord-Nachricht {index}/{len(messages)} NICHT gesendet ({len(message)} Zeichen)")
+            print("--- TEST-NACHRICHT ---\n" + message)
+        return
+
     webhook = os.getenv("DISCORD_WEBHOOK_URL")
     if not webhook:
         raise RuntimeError("DISCORD_WEBHOOK_URL ist nicht gesetzt.")
@@ -873,15 +881,15 @@ def is_first_friday(today=None):
 def make_monthly_agent_report():
     return "\n".join(
         [
-            "🕵️ **LS-INSIDER – MONATSBERICHT**",
+            "🕵️ **LS-INSIDER – GEHEIMBERICHT**",
             "",
-            "🤫 **Psst … Zeit für den monatlichen Lagebericht.**",
+            "🤫 **Psst … Lagebericht aus Los Santos.**",
             "",
             "**INFORMANTENBERICHT**",
             "",
-            "*„Der Monat ist noch nicht vorbei – und in Los Santos kann sich jederzeit etwas ändern. Deshalb behalte ich die Lage weiter im Auge und melde mich, sobald es etwas wirklich Neues zu berichten gibt.“*",
+            "*„Keine neuen Vorkommnisse zu melden. Die Lage in Los Santos bleibt unter Beobachtung. Ich halte weiterhin Augen und Ohren offen und melde mich, sobald sich etwas verändert.“*",
             "",
-            "💬 *„Bis dahin: Augen offen halten und immer wissen, was auf den Straßen passiert.“*",
+            "💬 *„Bis dahin heißt es: unauffällig bleiben und aufmerksam sein.“*",
         ]
     )
 
@@ -1167,6 +1175,14 @@ def self_test():
     )
     assert filter_new_rockstar_facts(candidates, wednesday_facts(data), known) == []
 
+    duplicate_topics = [
+        "Members at GTA+ receive one week of early access to the new Pegassi Horus through the Vinewood Car Club.",
+        "Every week, get 2X GTA$ on the first completion of Scene of the Crime in the Cluckin' Bell Farm Raid.",
+        "GTA+ members get 60% off Biker businesses and upgrades.",
+        "GTA$500,000 is deposited monthly into Maze Bank for GTA+ members.",
+    ]
+    assert filter_new_rockstar_facts(duplicate_topics, wednesday_facts(data), known) == []
+
     live_like = [
         "Members at GTA+ receive one week of early access to the new Pegassi Horus through the Vinewood Car Club.",
         "Every week, get 2X GTA$ on the first completion of Scene of the Crime in the Cluckin' Bell Farm Raid.",
@@ -1182,7 +1198,7 @@ def self_test():
     assert new
 
     monthly = make_monthly_agent_report()
-    assert "LS-INSIDER – MONATSBERICHT" in monthly
+    assert "LS-INSIDER – GEHEIMBERICHT" in monthly
     assert is_first_friday(date(2026, 9, 4))
     assert not is_first_friday(date(2026, 9, 11))
 
