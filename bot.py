@@ -15,6 +15,7 @@ STATE_FILE = "weekly_state.json"
 VIENNA = ZoneInfo("Europe/Vienna")
 TEST_MODE = os.getenv("LS_INSIDER_TEST_MODE", "false").lower() == "true"
 QUICK_TEST = os.getenv("LS_INSIDER_QUICK_TEST", "false").lower() == "true"
+ALL_POSTS_TEST = os.getenv("LS_INSIDER_ALL_POSTS_TEST", "false").lower() == "true"
 DISCORD_LIMIT = 1950
 TIMEOUT_MS = 60000
 
@@ -1448,9 +1449,82 @@ def quick_test():
 
 
 
+async def all_posts_test():
+    """Complete offline preview of all publication formats.
+
+    No web requests, no Discord messages, no state changes. Wednesday uses the
+    normal fixture, Thursday previews both the no-change decision and a genuine
+    new-information secret report, and Friday previews the monthly report.
+    """
+    print("========================================")
+    print("LS-INSIDER – KOMPLETTER POST-TEST")
+    print("========================================")
+
+    data = make_wednesday_data(WED_FIXTURE, GTA_FIXTURE)
+    wednesday_post = format_wednesday(data, "https://example.invalid/article")
+    wednesday_messages = split_message(wednesday_post)
+    assert wednesday_messages
+    assert all(len(message) <= DISCORD_LIMIT for message in wednesday_messages)
+    assert "🗞️ **LS-INSIDER**" in wednesday_post
+    print(f"✅ Mittwoch: {len(wednesday_messages)} Nachricht(en), {len(wednesday_post)} Zeichen")
+
+    known = known_concepts(data)
+    known_facts = wednesday_facts(data)
+
+    candidates = rockstar_candidates(
+        "GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar",
+        clean_rockstar_lines(ROCK_FIXTURE),
+    )
+    unchanged = filter_new_rockstar_facts(
+        candidates,
+        known_facts,
+        known,
+        "GTA+ Members Enjoy One Week of Early Access to the New Pegassi Horus Supercar",
+    )
+    assert unchanged == []
+    print("✅ Donnerstag ohne Änderung: Kein Post")
+
+    new_facts = filter_new_rockstar_facts(
+        ["A brand-new Vapid Testster vehicle is now available."],
+        known_facts,
+        known,
+        "A new vehicle has arrived in Los Santos",
+    )
+    assert new_facts
+    thursday_post = make_thursday_post(
+        {
+            "title": "A new vehicle has arrived in Los Santos",
+            "url": "https://example.invalid/rockstar",
+        },
+        new_facts,
+    )
+    thursday_messages = split_message(thursday_post)
+    assert thursday_messages
+    assert all(len(message) <= DISCORD_LIMIT for message in thursday_messages)
+    assert "GEHEIMBERICHT" in thursday_post
+    assert "Vapid Testster" in thursday_post
+    print(f"✅ Donnerstag mit neuer Info: {len(thursday_messages)} Nachricht(en), Post wird erzeugt")
+
+    monthly = make_monthly_agent_report()
+    assert "LS-INSIDER – GEHEIMBERICHT" in monthly
+    assert "Keine neuen Vorkommnisse zu melden." in monthly
+    print("✅ Freitag: Monatsbericht wird erzeugt")
+
+    print("========================================")
+    print("KOMPLETTER POST-TEST OK")
+    print("✅ Keine Web-Abfragen")
+    print("✅ Keine Discord-Nachrichten")
+    print("✅ Kein Status gespeichert")
+    print("========================================")
+
+
 async def main():
     if QUICK_TEST:
         quick_test()
+        return
+
+    if ALL_POSTS_TEST:
+        await all_posts_test()
         return
 
     self_test()
