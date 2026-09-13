@@ -16,8 +16,12 @@ on:
         default: false
 
   schedule:
-    # Mittwoch bis Freitag: jede volle Stunde von 15:00 bis 23:00 Uhr Wiener Zeit
-    - cron: "0 15-23 * * 3-5"
+    # Mittwoch und Donnerstag: jede volle Stunde von 15:00 bis 23:00 Uhr Wiener Zeit
+    - cron: "0 15-23 * * 3-4"
+      timezone: "Europe/Vienna"
+
+    # Freitag: nur einmal um 15:00 Uhr Wiener Zeit
+    - cron: "0 15 * * 5"
       timezone: "Europe/Vienna"
 
 permissions:
