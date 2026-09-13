@@ -16,6 +16,7 @@ VIENNA = ZoneInfo("Europe/Vienna")
 TEST_MODE = os.getenv("LS_INSIDER_TEST_MODE", "false").lower() == "true"
 QUICK_TEST = os.getenv("LS_INSIDER_QUICK_TEST", "false").lower() == "true"
 ALL_POSTS_TEST = os.getenv("LS_INSIDER_ALL_POSTS_TEST", "false").lower() == "true"
+DISCORD_POST_TEST = os.getenv("LS_INSIDER_DISCORD_POST_TEST", "false").lower() == "true"
 DISCORD_LIMIT = 1950
 TIMEOUT_MS = 60000
 
@@ -1450,11 +1451,11 @@ def quick_test():
 
 
 async def all_posts_test():
-    """Complete offline preview of all publication formats.
+    """Complete test of all publication formats.
 
-    No web requests, no Discord messages, no state changes. Wednesday uses the
-    normal fixture, Thursday previews both the no-change decision and a genuine
-    new-information secret report, and Friday previews the monthly report.
+    By default this is an offline preview. With DISCORD_POST_TEST=true it sends
+    the generated Wednesday, Thursday and Friday test posts to Discord, while
+    still avoiding web requests and state changes.
     """
     print("========================================")
     print("LS-INSIDER – KOMPLETTER POST-TEST")
@@ -1467,6 +1468,9 @@ async def all_posts_test():
     assert all(len(message) <= DISCORD_LIMIT for message in wednesday_messages)
     assert "🗞️ **LS-INSIDER**" in wednesday_post
     print(f"✅ Mittwoch: {len(wednesday_messages)} Nachricht(en), {len(wednesday_post)} Zeichen")
+    if DISCORD_POST_TEST:
+        print("📨 Sende Mittwoch-Testpost an Discord …")
+        post_to_discord(wednesday_messages)
 
     known = known_concepts(data)
     known_facts = wednesday_facts(data)
@@ -1504,16 +1508,25 @@ async def all_posts_test():
     assert "GEHEIMBERICHT" in thursday_post
     assert "Vapid Testster" in thursday_post
     print(f"✅ Donnerstag mit neuer Info: {len(thursday_messages)} Nachricht(en), Post wird erzeugt")
+    if DISCORD_POST_TEST:
+        print("📨 Sende Donnerstag-Testpost an Discord …")
+        post_to_discord(thursday_messages)
 
     monthly = make_monthly_agent_report()
     assert "LS-INSIDER – GEHEIMBERICHT" in monthly
     assert "Keine neuen Vorkommnisse zu melden." in monthly
     print("✅ Freitag: Monatsbericht wird erzeugt")
+    if DISCORD_POST_TEST:
+        print("📨 Sende Freitag-Testpost an Discord …")
+        post_to_discord([monthly])
 
     print("========================================")
     print("KOMPLETTER POST-TEST OK")
     print("✅ Keine Web-Abfragen")
-    print("✅ Keine Discord-Nachrichten")
+    if DISCORD_POST_TEST:
+        print("✅ Discord-Testnachrichten gesendet")
+    else:
+        print("✅ Keine Discord-Nachrichten")
     print("✅ Kein Status gespeichert")
     print("========================================")
 
