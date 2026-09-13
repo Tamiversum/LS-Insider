@@ -21,6 +21,12 @@ on:
         type: boolean
         default: false
 
+      discord_post_test:
+        description: "Alle Testposts an Discord senden"
+        required: false
+        type: boolean
+        default: false
+
   schedule:
     # Mittwoch und Donnerstag: jede volle Stunde von 15:00 bis 23:00 Uhr Wiener Zeit
     - cron: "0 15-23 * * 3-4"
@@ -54,7 +60,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Chromium installieren
-        if: ${{ !inputs.quick_test && !inputs.all_posts_test }}
+        if: ${{ !inputs.quick_test && !inputs.all_posts_test && !inputs.discord_post_test }}
         run: playwright install --with-deps chromium
 
       - name: LS-Insider starten
@@ -63,10 +69,11 @@ jobs:
           LS_INSIDER_TEST_MODE: ${{ inputs.test_mode }}
           LS_INSIDER_QUICK_TEST: ${{ inputs.quick_test }}
           LS_INSIDER_ALL_POSTS_TEST: ${{ inputs.all_posts_test }}
+          LS_INSIDER_DISCORD_POST_TEST: ${{ inputs.discord_post_test }}
         run: python bot.py
 
       - name: Status speichern
-        if: ${{ !inputs.quick_test && !inputs.all_posts_test }}
+        if: ${{ !inputs.quick_test && !inputs.all_posts_test && !inputs.discord_post_test }}
         run: |
           git config user.name "LS-Insider Bot"
           git config user.email "ls-insider-bot@users.noreply.github.com"
