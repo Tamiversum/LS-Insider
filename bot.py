@@ -748,43 +748,110 @@ def format_wednesday(data, source_url):
 
 
 def split_message(text):
-    """Split safely at Discord's limit, including oversized single lines."""
+    """Split Discord text into logical sections without breaking sections apart.
+
+    The Wednesday newspaper is split at section boundaries whenever possible.
+    If one individual section is itself too long, only that section is hard-split.
+    """
     if len(text) <= DISCORD_LIMIT:
         return [text]
 
-    def hard_split(line):
-        parts = []
-        remaining = clean(line)
-        while len(remaining) > DISCORD_LIMIT:
-            cut = remaining.rfind(" ", 0, DISCORD_LIMIT + 1)
-            if cut < 1:
-                cut = DISCORD_LIMIT
-            parts.append(remaining[:cut].rstrip())
-            remaining = remaining[cut:].lstrip()
-        if remaining:
-            parts.append(remaining)
-        return parts
+    section_starts = {
+        "💰 ",
+        "🚗 ",
+        "🏷️ ",
+        "🎁 ",
+        "⭐ ",
+        "🏆 ",
+        "📍 ",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "🔗 ",
+    }
 
-    out, current = [], []
-    current_len = 0
-    for raw in text.splitlines():
-        if not raw.strip():
-            continue
-        for line in hard_split(raw):
-            if not current:
+    def is_section_start(line):
+        stripped = line.strip()
+        return any(stripped.startswith(marker) for marker in section_starts)
+
+    def hard_split_block(block):
+        lines = [clean(line) for line in block.splitlines() if line.strip()]
+        parts = []
+        current = []
+        current_len = 0
+
+        for line in lines:
+            if len(line) > DISCORD_LIMIT:
+                if current:
+                    parts.append("\n".join(current).strip())
+                    current = []
+                    current_len = 0
+                remaining = line
+                while len(remaining) > DISCORD_LIMIT:
+                    cut = remaining.rfind(" ", 0, DISCORD_LIMIT + 1)
+                    if cut < 1:
+                        cut = DISCORD_LIMIT
+                    parts.append(remaining[:cut].rstrip())
+                    remaining = remaining[cut:].lstrip()
+                if remaining:
+                    current = [remaining]
+                    current_len = len(remaining)
+                continue
+
+            candidate_len = len(line) if not current else current_len + 1 + len(line)
+            if current and candidate_len > DISCORD_LIMIT:
+                parts.append("\n".join(current).strip())
                 current = [line]
                 current_len = len(line)
-                continue
-            candidate_len = current_len + 1 + len(line)
-            if candidate_len <= DISCORD_LIMIT:
+            else:
                 current.append(line)
                 current_len = candidate_len
-            else:
-                out.append("\n".join(current).strip())
-                current = [line]
-                current_len = len(line)
+
+        if current:
+            parts.append("\n".join(current).strip())
+        return parts
+
+    lines = text.splitlines()
+    blocks = []
+    current = []
+
+    for line in lines:
+        if line.strip() and is_section_start(line) and current:
+            blocks.append("\n".join(current).strip())
+            current = [line]
+        else:
+            current.append(line)
+
     if current:
-        out.append("\n".join(current).strip())
+        blocks.append("\n".join(current).strip())
+
+    out = []
+    current_message = []
+    current_len = 0
+
+    for block in blocks:
+        if not block:
+            continue
+        block_len = len(block)
+
+        if block_len > DISCORD_LIMIT:
+            if current_message:
+                out.append("\n\n".join(current_message).strip())
+                current_message = []
+                current_len = 0
+            out.extend(hard_split_block(block))
+            continue
+
+        candidate_len = block_len if not current_message else current_len + 2 + block_len
+        if current_message and candidate_len > DISCORD_LIMIT:
+            out.append("\n\n".join(current_message).strip())
+            current_message = [block]
+            current_len = block_len
+        else:
+            current_message.append(block)
+            current_len = candidate_len
+
+    if current_message:
+        out.append("\n\n".join(current_message).strip())
+
     return out
 
 
@@ -1054,6 +1121,20 @@ def make_monthly_agent_report():
 
 def translate_rockstar(text):
     result = clean(text)
+    specific_translations = (
+        (
+            r"^A new vehicle has arrived in Los Santos$",
+            "Ein neues Fahrzeug ist in Los Santos eingetroffen.",
+        ),
+        (
+            r"^A brand-new Vapid Testster vehicle is now available\.?$",
+            "Ein brandneues Vapid-Testster-Fahrzeug ist jetzt verfügbar.",
+        ),
+    )
+    for pattern, repl in specific_translations:
+        if re.fullmatch(pattern, result, flags=re.I):
+            return repl
+
     for pattern, repl in (
         (r"GTA\+ Members", "GTA+ Mitglieder"),
         (r"GTA\+ members", "GTA+ Mitglieder"),
@@ -1466,6 +1547,9 @@ async def all_posts_test():
     wednesday_messages = split_message(wednesday_post)
     assert wednesday_messages
     assert all(len(message) <= DISCORD_LIMIT for message in wednesday_messages)
+    assert len(wednesday_messages) == 2
+    assert "⭐ **DAS PLUS FÜR EUCH**" not in wednesday_messages[0]
+    assert "⭐ **DAS PLUS FÜR EUCH**" in wednesday_messages[1]
     assert "🗞️ **LS-INSIDER**" in wednesday_post
     print(f"✅ Mittwoch: {len(wednesday_messages)} Nachricht(en), {len(wednesday_post)} Zeichen")
     if DISCORD_POST_TEST:
@@ -1506,7 +1590,8 @@ async def all_posts_test():
     assert thursday_messages
     assert all(len(message) <= DISCORD_LIMIT for message in thursday_messages)
     assert "GEHEIMBERICHT" in thursday_post
-    assert "Vapid Testster" in thursday_post
+    assert "Vapid-Testster-Fahrzeug" in thursday_post
+    assert "Ein brandneues Vapid-Testster-Fahrzeug ist jetzt verfügbar." in thursday_post
     print(f"✅ Donnerstag mit neuer Info: {len(thursday_messages)} Nachricht(en), Post wird erzeugt")
     if DISCORD_POST_TEST:
         print("📨 Sende Donnerstag-Testpost an Discord …")
