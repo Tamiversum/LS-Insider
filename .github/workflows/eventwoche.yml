@@ -15,6 +15,12 @@ on:
         type: boolean
         default: false
 
+      all_posts_test:
+        description: "Alle Posts offline testen"
+        required: false
+        type: boolean
+        default: false
+
   schedule:
     # Mittwoch und Donnerstag: jede volle Stunde von 15:00 bis 23:00 Uhr Wiener Zeit
     - cron: "0 15-23 * * 3-4"
@@ -48,7 +54,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Chromium installieren
-        if: ${{ !inputs.quick_test }}
+        if: ${{ !inputs.quick_test && !inputs.all_posts_test }}
         run: playwright install --with-deps chromium
 
       - name: LS-Insider starten
@@ -56,10 +62,11 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           LS_INSIDER_TEST_MODE: ${{ inputs.test_mode }}
           LS_INSIDER_QUICK_TEST: ${{ inputs.quick_test }}
+          LS_INSIDER_ALL_POSTS_TEST: ${{ inputs.all_posts_test }}
         run: python bot.py
 
       - name: Status speichern
-        if: ${{ !inputs.quick_test }}
+        if: ${{ !inputs.quick_test && !inputs.all_posts_test }}
         run: |
           git config user.name "LS-Insider Bot"
           git config user.email "ls-insider-bot@users.noreply.github.com"
