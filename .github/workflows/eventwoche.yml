@@ -23,6 +23,11 @@ on:
         required: false
         type: boolean
         default: false
+      gsv_preview:
+        description: "GSV-Beitrag abrufen und Vorschau anzeigen, ohne zu posten"
+        required: false
+        type: boolean
+        default: false
   schedule:
     # Mittwoch: Wochenfakten für den Donnerstag-Geheimbericht aktualisieren
     - cron: "0 23 * * 3"
@@ -47,6 +52,7 @@ concurrency:
 jobs:
   eventwoche:
     if: ${{ github.event_name != 'schedule' || github.event.schedule != '15 * * * *' }}
+    if: ${{ !inputs.gsv_preview && (github.event_name != 'schedule' || github.event.schedule != '15 * * * *') }}
     runs-on: ubuntu-24.04
     steps:
       - name: Repository laden
@@ -93,6 +99,7 @@ jobs:
 
   gsv_spiegelkanal:
     if: ${{ github.event_name == 'schedule' && github.event.schedule == '15 * * * *' }}
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '15 * * * *') || (github.event_name == 'workflow_dispatch' && inputs.gsv_preview) }}
     runs-on: ubuntu-24.04
     steps:
       - name: Repository laden
@@ -116,10 +123,12 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
           GSV_WEEKLY_CHANNEL_ID: "1553860289102090381"
+          LS_INSIDER_TEST_MODE: ${{ inputs.gsv_preview }}
           LS_INSIDER_MIRROR_POLL: "true"
         run: python bot.py
 
       - name: Spiegelkanal-Status speichern
+        if: ${{ !inputs.gsv_preview }}
         run: |
           git config user.name "LS-Insider Bot"
           git config user.email "ls-insider-bot@users.noreply.github.com"
