@@ -221,7 +221,7 @@ def gsv_post_title(text, post_type):
     return "🗞️ **LS-INSIDER**"
 
 
-def format_gsv_post(text, post_type, permalink=""):
+def format_gsv_post(text, post_type):
     # Remove the GSV bot ping/greeting; the translated body retains its headings,
     # bullet lists, dates, bonuses, discounts and vehicle names.
     body = re.sub(r"^Hey\s+@?PingGTAOnline\s*", "", text, flags=re.I)
@@ -257,8 +257,6 @@ def format_gsv_post(text, post_type, permalink=""):
     body = translate_gsv_text(body)
     title = gsv_post_title(text, post_type)
     lines = [title, "", body.strip(), "", "*Quelle: GTA Series Videos*"]
-    if permalink:
-        lines.append(f"<{permalink}>")
     return "\n".join(lines)
 
 
