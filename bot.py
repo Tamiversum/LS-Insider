@@ -20,6 +20,7 @@ DISCORD_POST_TEST = os.getenv("LS_INSIDER_DISCORD_POST_TEST", "false").lower() =
 DISCORD_LIMIT = 1950
 TIMEOUT_MS = 60000
 MIRROR_POLL = os.getenv("LS_INSIDER_MIRROR_POLL", "false").lower() == "true"
+GSV_PREVIEW = os.getenv("LS_INSIDER_GSV_PREVIEW", "false").lower() == "true"
 WEDNESDAY_SILENT = os.getenv("LS_INSIDER_WEDNESDAY_SILENT", "false").lower() == "true"
 GSV_CHANNEL_ID = os.getenv("GSV_WEEKLY_CHANNEL_ID", "1553860289102090381")
 DISCORD_API = "https://discord.com/api/v10"
@@ -249,7 +250,7 @@ def format_gsv_post(text, post_type, permalink=""):
         (r"^Test Rides", "🚗 **NEUES AUF DEN STRASSEN**"),
         (r"^Free Vehicles", "🚗 **NEUES AUF DEN STRASSEN**"),
         (r"^Discounts(?:\s*\([^)]*\))?", "🏷️ **LAUFENDE DEALS**"),
-        (r"^[2345]X GTA\$.*", "💰 **DIE GROSSEN GESCHÄFTE – \g<0>**"),
+        (r"^[2345]X GTA\$.*", r"💰 **DIE GROSSEN GESCHÄFTE – \g<0>**"),
     )
     for pattern, replacement in heading_map:
         body = re.sub(pattern, replacement, body, flags=re.I | re.M)
@@ -284,13 +285,15 @@ def run_gsv_mirror_poll():
     print("\nLS-INSIDER – GTA SERIES VIDEOS SPIEGELKANAL")
     state = load_state()
     last_id = state.get("gsv_last_seen_message_id")
-    messages = fetch_gsv_messages(last_id)
+    # A preview inspects recent history regardless of the live polling cursor;
+    # TEST_MODE prevents both publishing and state changes.
+    messages = fetch_gsv_messages(None if GSV_PREVIEW else last_id)
     messages.sort(key=lambda item: int(item["id"]))
 
     # On first run, don't replay old channel history. Start with posts from the
     # last seven days, plus a still-current month-long event overview. Subsequent
     # runs use Discord's after cursor.
-    if not last_id and messages:
+    if (GSV_PREVIEW or not last_id) and messages:
         now = datetime.now(VIENNA)
         recent = []
         for item in messages:
@@ -306,12 +309,14 @@ def run_gsv_mirror_poll():
         messages = recent
 
     newest_id = state.get("gsv_last_seen_message_id")
+    recognized = 0
     for item in messages:
         newest_id = item["id"]
         text = gsv_message_text(item)
         post_type = classify_gsv_post(text)
         if not post_type:
             continue
+        recognized += 1
         post = format_gsv_post(text, post_type)
         parts = split_message(post)
         label = "SONDERAUSGABE" if post_type == "event_overview" else "WOCHENPOST"
@@ -329,6 +334,8 @@ def run_gsv_mirror_poll():
             save_state(state)
     if not messages:
         print("Keine neuen Spiegelkanal-Nachrichten.")
+    elif GSV_PREVIEW and recognized == 0:
+        print("Vorschau: Im jüngsten Nachrichtenverlauf wurde kein passender Wochenpost oder Eventüberblick erkannt.")
 
 
 def week_period(today: date | None = None):
