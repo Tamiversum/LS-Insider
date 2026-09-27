@@ -121,6 +121,7 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
           GSV_WEEKLY_CHANNEL_ID: "1553860289102090381"
+          LS_INSIDER_GSV_PREVIEW: ${{ inputs.gsv_preview }}
           LS_INSIDER_TEST_MODE: ${{ inputs.gsv_preview }}
           LS_INSIDER_MIRROR_POLL: "true"
         run: python bot.py
