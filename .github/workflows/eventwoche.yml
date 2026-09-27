@@ -8,49 +8,54 @@ on:
         required: false
         type: boolean
         default: false
-
       quick_test:
         description: "Nur den schnellen Offline-Test ausführen"
         required: false
         type: boolean
         default: false
-
       all_posts_test:
         description: "Alle Posts offline testen"
         required: false
         type: boolean
         default: false
-
       discord_post_test:
         description: "Alle Testposts an Discord senden"
         required: false
         type: boolean
         default: false
-
   schedule:
-    # Mittwoch und Donnerstag: jede volle Stunde von 15:00 bis 23:00 Uhr Wiener Zeit
-    - cron: "0 15-23 * * 3-4"
+    # Mittwoch: Wochenfakten für den Donnerstag-Geheimbericht aktualisieren
+    - cron: "0 23 * * 3"
       timezone: "Europe/Vienna"
-
-    # Freitag: nur einmal um 15:00 Uhr Wiener Zeit
+    # Donnerstag: Rockstar-Prüfung zu den bestehenden Zeiten
+    - cron: "0 15-23 * * 4"
+      timezone: "Europe/Vienna"
+    # Freitag: Monatsbericht
     - cron: "0 15 * * 5"
+      timezone: "Europe/Vienna"
+    # GTA Series Videos Spiegelkanal jede Stunde prüfen
+    - cron: "15 * * * *"
       timezone: "Europe/Vienna"
 
 permissions:
   contents: write
 
+concurrency:
+  group: ls-insider-weekly-state
+  cancel-in-progress: false
+
 jobs:
   eventwoche:
-    runs-on: ubuntu-latest
-
+    if: ${{ github.event_name != 'schedule' || github.event.schedule != '15 * * * *' }}
+    runs-on: ubuntu-24.04
     steps:
       - name: Repository laden
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Python einrichten
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -70,6 +75,7 @@ jobs:
           LS_INSIDER_QUICK_TEST: ${{ inputs.quick_test }}
           LS_INSIDER_ALL_POSTS_TEST: ${{ inputs.all_posts_test }}
           LS_INSIDER_DISCORD_POST_TEST: ${{ inputs.discord_post_test }}
+          LS_INSIDER_WEDNESDAY_SILENT: ${{ github.event_name == 'schedule' && github.event.schedule == '0 23 * * 3' }}
         run: python bot.py
 
       - name: Status speichern
@@ -77,12 +83,50 @@ jobs:
         run: |
           git config user.name "LS-Insider Bot"
           git config user.email "ls-insider-bot@users.noreply.github.com"
-
           git add weekly_state.json
-
           if git diff --cached --quiet; then
-            echo "ℹ️ Kein neuer Status gespeichert."
+            echo "Kein neuer Status gespeichert."
           else
             git commit -m "Update weekly event state"
+            git push
+          fi
+
+  gsv_spiegelkanal:
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '15 * * * *' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Repository laden
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Python einrichten
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: GSV-Spiegelkanal prüfen und neue Beiträge veröffentlichen
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
+          GSV_WEEKLY_CHANNEL_ID: "1553860289102090381"
+          LS_INSIDER_MIRROR_POLL: "true"
+        run: python bot.py
+
+      - name: Spiegelkanal-Status speichern
+        run: |
+          git config user.name "LS-Insider Bot"
+          git config user.email "ls-insider-bot@users.noreply.github.com"
+          git add weekly_state.json
+          if git diff --cached --quiet; then
+            echo "Kein neuer Status gespeichert."
+          else
+            git commit -m "Update GSV mirror state"
             git push
           fi
