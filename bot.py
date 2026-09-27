@@ -19,6 +19,10 @@ ALL_POSTS_TEST = os.getenv("LS_INSIDER_ALL_POSTS_TEST", "false").lower() == "tru
 DISCORD_POST_TEST = os.getenv("LS_INSIDER_DISCORD_POST_TEST", "false").lower() == "true"
 DISCORD_LIMIT = 1950
 TIMEOUT_MS = 60000
+MIRROR_POLL = os.getenv("LS_INSIDER_MIRROR_POLL", "false").lower() == "true"
+WEDNESDAY_SILENT = os.getenv("LS_INSIDER_WEDNESDAY_SILENT", "false").lower() == "true"
+GSV_CHANNEL_ID = os.getenv("GSV_WEEKLY_CHANNEL_ID", "1553860289102090381")
+DISCORD_API = "https://discord.com/api/v10"
 
 
 def clean(text: str) -> str:
@@ -91,6 +95,240 @@ def post_to_discord(messages):
         )
         response.raise_for_status()
         print(f"Discord: Nachricht {index}/{len(messages)} gesendet ({len(message)} Zeichen)")
+
+
+def gsv_message_text(message):
+    """Collect the readable text from a followed-channel message and its embeds."""
+    pieces = [message.get("content", "")]
+    for embed in message.get("embeds", []):
+        pieces.extend((embed.get("title", ""), embed.get("description", "")))
+        for field in embed.get("fields", []):
+            pieces.extend((field.get("name", ""), field.get("value", "")))
+    raw = html.unescape("\n".join(x for x in pieces if x))
+    raw = raw.replace("\u00a0", " ").replace("\u200b", "").replace("\r", "")
+    return "\n".join(line.strip() for line in raw.splitlines()).strip()
+
+
+def classify_gsv_post(text):
+    """Classify GSV channel posts by their content, never by author or weekday."""
+    low = clean(text).casefold()
+    if "event breakdown" in low and (
+        "full schedule" in low or "four weeks" in low or "month-long" in low
+    ):
+        return "event_overview"
+    if re.search(r"a new gta online event starts on\s+[a-z]+\s+\d+", low):
+        return "weekly"
+    return None
+
+
+def event_overview_is_current(text, today=None):
+    """Recognize a dated multi-week overview during its event window."""
+    today = today or datetime.now(VIENNA).date()
+    month_numbers = {
+        "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+        "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7,
+        "july": 7, "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+        "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+    }
+    match = re.search(
+        r"\b(?:Four weeks|\d+ weeks)\s*\(\s*([A-Za-z]+)\.?\s+(\d{1,2})\s*[-–]\s*(?:([A-Za-z]+)\.?\s*)?(\d{1,2})\s*\)",
+        text,
+        flags=re.I,
+    )
+    if not match:
+        return False
+    start_month = month_numbers.get(match.group(1).casefold())
+    end_month = month_numbers.get((match.group(3) or match.group(1)).casefold())
+    if not start_month or not end_month:
+        return False
+    start_day, end_day = int(match.group(2)), int(match.group(4))
+    start_year = today.year
+    if start_month - today.month >= 7:
+        start_year -= 1
+    elif today.month - start_month >= 7:
+        start_year += 1
+    end_year = start_year + (1 if end_month < start_month else 0)
+    try:
+        start = date(start_year, start_month, start_day)
+        end = date(end_year, end_month, end_day)
+    except ValueError:
+        return False
+    return start - timedelta(days=7) <= today <= end
+
+
+def translate_gsv_text(text):
+    """Translate source prose while retaining the original line and list structure."""
+    text = html.unescape(text or "").replace("\r", "").strip()
+    api_key = os.getenv("DEEPL_API_KEY", "").strip()
+    if api_key:
+        translated = []
+        # DeepL accepts a limited number of characters per request; preserve line breaks.
+        chunks, current = [], ""
+        for line in text.splitlines():
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) > 4500 and current:
+                chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        for chunk in chunks:
+            response = requests.post(
+                "https://api-free.deepl.com/v2/translate",
+                data={"text": chunk, "target_lang": "DE", "preserve_formatting": "1"},
+                headers={"Authorization": f"DeepL-Auth-Key {api_key}"},
+                timeout=45,
+            )
+            response.raise_for_status()
+            translated.append(response.json()["translations"][0]["text"])
+        return "\n".join(translated)
+
+    # No translation key is required for the default path. Keep this service call
+    # isolated so failures stop publication instead of silently posting English.
+    translated = []
+    chunks, current = [], ""
+    for line in text.splitlines():
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > 3500 and current:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    for chunk in chunks:
+        response = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "en", "tl": "de", "dt": "t", "q": chunk},
+            timeout=45,
+        )
+        response.raise_for_status()
+        data = response.json()
+        translated.append("".join(part[0] for part in data[0] if part and part[0]))
+    return "\n".join(translated)
+
+
+def gsv_post_title(text, post_type):
+    if post_type == "event_overview":
+        match = re.search(r"GTA Online:\s*(.+?)\s+Event Breakdown", text, flags=re.I)
+        event = clean(match.group(1)) if match else "GTA ONLINE EVENT"
+        return (
+            f"🗞️ **LS-INSIDER – SONDERAUSGABE: {event.upper()}**\n\n"
+            "**DER GROSSE EVENTFAHRPLAN FÜR LOS SANTOS**"
+        )
+    return "🗞️ **LS-INSIDER**"
+
+
+def format_gsv_post(text, post_type, permalink=""):
+    # Remove the GSV bot ping/greeting; the translated body retains its headings,
+    # bullet lists, dates, bonuses, discounts and vehicle names.
+    body = re.sub(r"^Hey\s+@?PingGTAOnline\s*", "", text, flags=re.I)
+    body = re.sub(
+        r"(?is)^Hey\b.*?(?=a new GTA Online event starts on)",
+        "",
+        body,
+        count=1,
+    )
+    body = re.sub(r"(?im)^GTA Online:\s*.+?Event Breakdown\s*$", "", body)
+    body = re.sub(
+        r"^a new GTA Online event starts on\s+([^\n.]+)\s*\(available through\s+([^\)]+)\)\.?\s*",
+        r"Ein neues GTA-Online-Event läuft vom \1 bis zum \2.\n\n",
+        body,
+        flags=re.I,
+    )
+    heading_map = (
+        (r"^Month-Long Weekly Challenges", "🏆 **DIE WOCHENAUFTRÄGE ÜBER DEN GESAMTEN EVENTZEITRAUM**"),
+        (r"^Free Properties by Week", "🏙️ **KOSTENLOSE IMMOBILIEN PRO WOCHE**"),
+        (r"^Bonuses & Discounts", "💼 **BONI UND RABATTE**"),
+        (r"^Weekly Challenge", "🏆 **DIE WOCHENAUFTRÄGE**"),
+        (r"^Gun Van Inventory & Discounts", "🔫 **WAFFEN IM GUN VAN**"),
+        (r"^Salvage Yard Robberies", "🛠️ **EINSÄTZE AUF DEM SCHROTTPLATZ**"),
+        (r"^Rotating Content", "📍 **DIESE WOCHE AKTUELL IN LOS SANTOS**"),
+        (r"^Premium Race & Trials", "🏁 **PREMIUMRENNEN & ZEITFAHRTEN**"),
+        (r"^Test Rides", "🚗 **NEUES AUF DEN STRASSEN**"),
+        (r"^Free Vehicles", "🚗 **NEUES AUF DEN STRASSEN**"),
+        (r"^Discounts(?:\s*\([^)]*\))?", "🏷️ **LAUFENDE DEALS**"),
+        (r"^[2345]X GTA\$.*", "💰 **DIE GROSSEN GESCHÄFTE – \g<0>**"),
+    )
+    for pattern, replacement in heading_map:
+        body = re.sub(pattern, replacement, body, flags=re.I | re.M)
+    body = translate_gsv_text(body)
+    title = gsv_post_title(text, post_type)
+    lines = [title, "", body.strip(), "", "*Quelle: GTA Series Videos*"]
+    if permalink:
+        lines.append(f"<{permalink}>")
+    return "\n".join(lines)
+
+
+def fetch_gsv_messages(after_id=None):
+    token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("DISCORD_BOT_TOKEN ist nicht gesetzt.")
+    if not GSV_CHANNEL_ID:
+        raise RuntimeError("GSV_WEEKLY_CHANNEL_ID ist nicht gesetzt.")
+    params = {"limit": 100}
+    if after_id:
+        params["after"] = str(after_id)
+    response = requests.get(
+        f"{DISCORD_API}/channels/{GSV_CHANNEL_ID}/messages",
+        headers={"Authorization": f"Bot {token}"},
+        params=params,
+        timeout=45,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def run_gsv_mirror_poll():
+    print("\nLS-INSIDER – GTA SERIES VIDEOS SPIEGELKANAL")
+    state = load_state()
+    last_id = state.get("gsv_last_seen_message_id")
+    messages = fetch_gsv_messages(last_id)
+    messages.sort(key=lambda item: int(item["id"]))
+
+    # On first run, don't replay old channel history. Start with posts from the
+    # last seven days, plus a still-current month-long event overview. Subsequent
+    # runs use Discord's after cursor.
+    if not last_id and messages:
+        now = datetime.now(VIENNA)
+        recent = []
+        for item in messages:
+            created = datetime.fromisoformat(item["timestamp"].replace("Z", "+00:00")).astimezone(VIENNA)
+            kind = classify_gsv_post(gsv_message_text(item))
+            recent_weekly = kind == "weekly" and created >= now - timedelta(days=7)
+            recent_overview = kind == "event_overview" and (
+                event_overview_is_current(gsv_message_text(item), now.date())
+                or created >= now - timedelta(days=7)
+            )
+            if recent_weekly or recent_overview:
+                recent.append(item)
+        messages = recent
+
+    newest_id = state.get("gsv_last_seen_message_id")
+    for item in messages:
+        newest_id = item["id"]
+        text = gsv_message_text(item)
+        post_type = classify_gsv_post(text)
+        if not post_type:
+            continue
+        post = format_gsv_post(text, post_type)
+        parts = split_message(post)
+        label = "SONDERAUSGABE" if post_type == "event_overview" else "WOCHENPOST"
+        print(f"GSV {label}: {len(parts)} Discord-Nachricht(en)")
+        for part in parts:
+            print("--- GSV-POST ---\n" + part)
+        post_to_discord(parts)
+        state["gsv_last_seen_message_id"] = newest_id
+        if not TEST_MODE:
+            save_state(state)
+
+    if newest_id and newest_id != state.get("gsv_last_seen_message_id"):
+        state["gsv_last_seen_message_id"] = newest_id
+        if not TEST_MODE:
+            save_state(state)
+    if not messages:
+        print("Keine neuen Spiegelkanal-Nachrichten.")
 
 
 def week_period(today: date | None = None):
@@ -1224,6 +1462,18 @@ async def run_wednesday():
     print(f"Mittwoch: {len(messages)} Nachricht(en), {len(message_text)} Zeichen")
     state = load_state()
     period_key = f"{data['period'][0]:%Y-%m-%d}_{data['period'][1]:%Y-%m-%d}"
+    if WEDNESDAY_SILENT:
+        state.update(
+            {
+                "wednesday_period": period_key,
+                "wednesday_facts": wednesday_facts(data),
+                "wednesday_concepts": sorted(known_concepts(data)),
+                "wednesday_plus_url": gta_plus_url,
+            }
+        )
+        save_state(state)
+        print("Mittwoch: Fakten für den Geheimbericht gespeichert; Wochenpost kommt aus dem GSV-Spiegelkanal.")
+        return data
     if not TEST_MODE and state.get("wednesday_period") == period_key:
         print("Mittwoch bereits veröffentlicht.")
         return data
@@ -1617,6 +1867,10 @@ async def all_posts_test():
 
 
 async def main():
+    if MIRROR_POLL:
+        run_gsv_mirror_poll()
+        return
+
     if QUICK_TEST:
         quick_test()
         return
