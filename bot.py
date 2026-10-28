@@ -99,16 +99,23 @@ def post_to_discord(messages):
 
 
 def gsv_message_text(message):
-    """Collect the readable text from a followed-channel message and its embeds."""
+    """Collect source text, embeds and image links from a followed-channel post."""
     pieces = [message.get("content", "")]
     for embed in message.get("embeds", []):
         pieces.extend((embed.get("title", ""), embed.get("description", "")))
         for field in embed.get("fields", []):
             pieces.extend((field.get("name", ""), field.get("value", "")))
+        for key in ("image", "thumbnail"):
+            image_url = (embed.get(key) or {}).get("url", "")
+            if image_url:
+                pieces.append(f"Bild: {image_url}")
+    for attachment in message.get("attachments", []):
+        image_url = attachment.get("url", "")
+        if image_url:
+            pieces.append(f"Bild: {image_url}")
     raw = html.unescape("\n".join(x for x in pieces if x))
     raw = raw.replace("\u00a0", " ").replace("\u200b", "").replace("\r", "")
     return "\n".join(line.strip() for line in raw.splitlines()).strip()
-
 
 def classify_gsv_post(text):
     """Classify GSV channel posts by their content, never by author or weekday."""
@@ -158,14 +165,20 @@ def event_overview_is_current(text, today=None):
 
 
 def translate_gsv_text(text):
-    """Translate source prose while retaining the original line and list structure."""
+    """Translate source prose in small, retryable chunks while preserving lines."""
     text = html.unescape(text or "").replace("\r", "").strip()
     api_key = os.getenv("DEEPL_API_KEY", "").strip()
     if api_key:
         translated = []
-        # DeepL accepts a limited number of characters per request; preserve line breaks.
         chunks, current = [], ""
         for line in text.splitlines():
+            # Split long individual lines too; DeepL has a per-request character limit.
+            while len(line) > 4000:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                chunks.append(line[:4000])
+                line = line[4000:]
             candidate = f"{current}\n{line}" if current else line
             if len(candidate) > 4500 and current:
                 chunks.append(current)
@@ -185,80 +198,249 @@ def translate_gsv_text(text):
             translated.append(response.json()["translations"][0]["text"])
         return "\n".join(translated)
 
-    # No translation key is required for the default path. Keep this service call
-    # isolated so failures stop publication instead of silently posting English.
-    translated = []
+    # Google Translate's public endpoint rate-limits large requests. Keep chunks
+    # small and retry temporary 429/5xx responses; never silently publish English.
     chunks, current = [], ""
     for line in text.splitlines():
-        candidate = f"{current}\n{line}" if current else line
-        if len(candidate) > 3500 and current:
-            chunks.append(current)
-            current = line
-        else:
-            current = candidate
+        line_parts = [line[i:i + 900] for i in range(0, len(line), 900)] or [""]
+        for part in line_parts:
+            candidate = f"{current}\n{part}" if current else part
+            if len(candidate) > 900 and current:
+                chunks.append(current)
+                current = part
+            else:
+                current = candidate
     if current:
         chunks.append(current)
-    for chunk in chunks:
-        response = requests.get(
-            "https://translate.googleapis.com/translate_a/single",
-            params={"client": "gtx", "sl": "en", "tl": "de", "dt": "t", "q": chunk},
-            timeout=45,
-        )
-        response.raise_for_status()
-        data = response.json()
-        translated.append("".join(part[0] for part in data[0] if part and part[0]))
-    return "\n".join(translated)
 
+    translated = []
+    endpoints = (
+        "https://translate.googleapis.com/translate_a/single",
+        "https://translate.google.com/translate_a/single",
+    )
+    for chunk in chunks:
+        last_error = None
+        for endpoint in endpoints:
+            for attempt in range(4):
+                try:
+                    response = requests.get(
+                        endpoint,
+                        params={"client": "gtx", "sl": "en", "tl": "de", "dt": "t", "q": chunk},
+                        headers={"User-Agent": "Mozilla/5.0 LS-Insider/1.0"},
+                        timeout=45,
+                    )
+                    if response.status_code == 429 or response.status_code >= 500:
+                        retry_after = response.headers.get("Retry-After", "")
+                        try:
+                            delay = min(30, max(1, int(retry_after))) if retry_after else 2 ** (attempt + 1)
+                        except ValueError:
+                            delay = 2 ** (attempt + 1)
+                        last_error = requests.HTTPError(
+                            f"Google Translate HTTP {response.status_code}; retrying in {delay}s",
+                            response=response,
+                        )
+                        if attempt < 3:
+                            import time
+                            time.sleep(delay)
+                            continue
+                        break
+                    response.raise_for_status()
+                    data = response.json()
+                    translated.append("".join(part[0] for part in data[0] if part and part[0]))
+                    last_error = None
+                    break
+                except requests.RequestException as exc:
+                    last_error = exc
+                    if attempt < 3 and (exc.response is None or exc.response.status_code == 429 or exc.response.status_code >= 500):
+                        import time
+                        time.sleep(2 ** (attempt + 1))
+                        continue
+                    break
+            if last_error is None:
+                break
+        if last_error is not None:
+            raise RuntimeError(
+                "Übersetzung fehlgeschlagen; der Beitrag wird nicht veröffentlicht und beim nächsten Lauf erneut versucht."
+            ) from last_error
+    return "\n".join(translated)
 
 def gsv_post_title(text, post_type):
     if post_type == "event_overview":
         match = re.search(r"GTA Online:\s*(.+?)\s+Event Breakdown", text, flags=re.I)
         event = clean(match.group(1)) if match else "GTA ONLINE EVENT"
         return (
-            f"🗞️ **LS-INSIDER – SONDERAUSGABE: {event.upper()}**\n\n"
+            f"[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER – SONDERAUSGABE: {event.upper()}**
+
+"
             "**DER GROSSE EVENTFAHRPLAN FÜR LOS SANTOS**"
         )
-    return "🗞️ **LS-INSIDER**"
+    return "[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER**"
 
 
 def format_gsv_post(text, post_type):
-    # Remove the GSV bot ping/greeting; the translated body retains its headings,
-    # bullet lists, dates, bonuses, discounts and vehicle names.
-    body = re.sub(r"^Hey\s+@?PingGTAOnline\s*", "", text, flags=re.I)
+    """Format a source-channel post in the LS-Insider newspaper style."""
+    body = re.sub(
+        r"^\s*\*\*(Hey\b.*?\(available through\s+[^\)]+\)\.?)\*\*\s*",
+        r"\1
+
+",
+        text,
+        count=1,
+        flags=re.I,
+    )
+    body = re.sub(r"^Hey\s+@?PingGTAOnline\s*", "", body, flags=re.I)
     body = re.sub(
         r"(?is)^Hey\b.*?(?=a new GTA Online event starts on)",
         "",
         body,
         count=1,
     )
-    body = re.sub(r"(?im)^GTA Online:\s*.+?Event Breakdown\s*$", "", body)
+
+    date_match = re.search(
+        r"a new GTA Online event starts on\s+([A-Za-z]+\.?\s+\d{1,2})\s*"
+        r"\(available through\s+([A-Za-z]+\.?\s+\d{1,2})\)",
+        text,
+        flags=re.I,
+    )
+    today = datetime.now(VIENNA).date()
+    start, end = week_period(today)
+    if date_match:
+        def parse_english_date(value, year):
+            value = value.replace(".", "")
+            for fmt in ("%B %d", "%b %d"):
+                try:
+                    return datetime.strptime(f"{value} {year}", f"{fmt} %Y").date()
+                except ValueError:
+                    pass
+            return None
+
+        start = parse_english_date(date_match.group(1), today.year) or start
+        if start - today > timedelta(days=180):
+            start = start.replace(year=start.year - 1)
+        end = parse_english_date(date_match.group(2), start.year) or end
+        if end < start:
+            end = end.replace(year=end.year + 1)
+
     body = re.sub(
-        r"^a new GTA Online event starts on\s+([^\n.]+)\s*\(available through\s+([^\)]+)\)\.?\s*",
-        r"Ein neues GTA-Online-Event läuft vom \1 bis zum \2.\n\n",
+        r"^a new GTA Online event starts on\s+[A-Za-z]+\.?\s+\d{1,2}\s*"
+        r"\(available through\s+[A-Za-z]+\.?\s+\d{1,2}\)\.?\s*",
+        "",
         body,
         flags=re.I,
     )
-    heading_map = (
-        (r"^Month-Long Weekly Challenges", "🏆 **DIE WOCHENAUFTRÄGE ÜBER DEN GESAMTEN EVENTZEITRAUM**"),
-        (r"^Free Properties by Week", "🏙️ **KOSTENLOSE IMMOBILIEN PRO WOCHE**"),
-        (r"^Bonuses & Discounts", "💼 **BONI UND RABATTE**"),
-        (r"^Weekly Challenge", "🏆 **DIE WOCHENAUFTRÄGE**"),
-        (r"^Gun Van Inventory & Discounts", "🔫 **WAFFEN IM GUN VAN**"),
-        (r"^Salvage Yard Robberies", "🛠️ **EINSÄTZE AUF DEM SCHROTTPLATZ**"),
-        (r"^Rotating Content", "📍 **DIESE WOCHE AKTUELL IN LOS SANTOS**"),
-        (r"^Premium Race & Trials", "🏁 **PREMIUMRENNEN & ZEITFAHRTEN**"),
-        (r"^Test Rides", "🚗 **NEUES AUF DEN STRASSEN**"),
-        (r"^Free Vehicles", "🚗 **NEUES AUF DEN STRASSEN**"),
-        (r"^Discounts(?:\s*\([^)]*\))?", "🏷️ **LAUFENDE DEALS**"),
-        (r"^[2345]X GTA\$.*", r"💰 **DIE GROSSEN GESCHÄFTE – \g<0>**"),
-    )
-    for pattern, replacement in heading_map:
-        body = re.sub(pattern, replacement, body, flags=re.I | re.M)
-    body = translate_gsv_text(body)
-    title = gsv_post_title(text, post_type)
-    lines = [title, "", body.strip(), "", "*Quelle: GTA Series Videos*"]
-    return "\n".join(lines)
+    body = re.sub(r"(?m)^\s*#{1,6}\s*", "", body)
+    body = re.sub(r"(?im)^GTA Online:\s*.+?Event Breakdown\s*$", "", body)
 
+    summary_match = re.search(r"(?m)^\s*\*([^*
+]+)\*\s*$", body)
+    summary = clean(summary_match.group(1)) if summary_match else ""
+    if summary_match:
+        body = body[:summary_match.start()] + body[summary_match.end():]
+
+    low = (summary + " " + text).casefold()
+    if "halloween" in low and ("final week" in low or "last week" in low):
+        headline = "HALLOWEEN GEHT IN DIE LETZTE WOCHE"
+    else:
+        headline = detect_event(text)
+
+    body = re.sub(
+        r"^Month-Long Weekly Challenges",
+        "[🏆](https://discord.com/assets/f11aff9f1c8c5f19.svg) **DIE WOCHENAUFTRÄGE ÜBER DEN GESAMTEN EVENTZEITRAUM**",
+        body, flags=re.I | re.M,
+    )
+    body = re.sub(
+        r"^Free Properties by Week",
+        "**KOSTENLOSE IMMOBILIEN PRO WOCHE**",
+        body, flags=re.I | re.M,
+    )
+    body = re.sub(
+        r"^Weekly Challenge",
+        "[🏆](https://discord.com/assets/f11aff9f1c8c5f19.svg) **DIE WOCHENAUFTRÄGE**",
+        body, flags=re.I | re.M,
+    )
+    body = re.sub(
+        r"^Gun Van Inventory & Discounts",
+        "**GUN VAN: INVENTAR & RABATTE**",
+        body, flags=re.I | re.M,
+    )
+    body = re.sub(
+        r"^Salvage Yard Robberies",
+        "**RAUBÜBERFÄLLE AUF SCHROTTPLÄTZEN**",
+        body, flags=re.I | re.M,
+    )
+    body = re.sub(
+        r"^Rotating Content",
+        "[📍](https://discord.com/assets/0da00b0fec31ced4.svg) **DIESE WOCHE AKTUELL IN LOS SANTOS**",
+        body, flags=re.I | re.M,
+    )
+    body = re.sub(
+        r"^Premium Race & Trials",
+        "[🏆](https://discord.com/assets/f11aff9f1c8c5f19.svg) **PREMIUMRENNEN & ZEITFAHRTEN**",
+        body, flags=re.I | re.M,
+    )
+    body = re.sub(
+        r"^Test Rides\s*&\s*Free Vehicles",
+        "[🚗](https://discord.com/assets/136310de891799f5.svg) **NEUES AUF DEN STRASSEN**",
+        body, flags=re.I | re.M,
+    )
+    body = re.sub(
+        r"^Test Rides",
+        "[🚗](https://discord.com/assets/136310de891799f5.svg) **NEUES AUF DEN STRASSEN**",
+        body, flags=re.I | re.M,
+    )
+    body = re.sub(
+        r"^Free Vehicles",
+        "[🚗](https://discord.com/assets/136310de891799f5.svg) **NEUES AUF DEN STRASSEN**",
+        body, flags=re.I | re.M,
+    )
+
+    bonus_count = 0
+    def replace_bonus_heading(match):
+        nonlocal bonus_count
+        bonus_count += 1
+        label = clean(match.group(0))
+        if bonus_count == 1:
+            return f"[💰](https://discord.com/assets/60e4658040396168.svg) **DIE GROSSEN GESCHÄFTE**
+
+**{label}**"
+        return f"**{label}**"
+    body = re.sub(r"^[2345]X GTA\$.*", replace_bonus_heading, body, flags=re.I | re.M)
+
+    discount_count = 0
+    def replace_discount_heading(match):
+        nonlocal discount_count
+        discount_count += 1
+        percent = match.group(1)
+        heading = f"**{percent}% RABATT**" if percent else "**LAUFENDE DEALS**"
+        if discount_count == 1:
+            return f"[🏷️](https://discord.com/assets/d2de573c80eb944d.svg) **LAUFENDE DEALS**
+
+{heading}"
+        return heading
+    body = re.sub(
+        r"^Discounts(?:\s*\((\d{1,3})%\s*OFF\))?",
+        replace_discount_heading,
+        body,
+        flags=re.I | re.M,
+    )
+
+    translated_summary = translate_gsv_text(summary) if summary else ""
+    translated_body = translate_gsv_text(body.strip()) if body.strip() else ""
+    if post_type == "event_overview":
+        headline = "DER GROSSE EVENTFAHRPLAN FÜR LOS SANTOS"
+    lines = [
+        "[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER**",
+        "",
+        f"**{headline}**",
+        f"[📅](https://discord.com/assets/c05b4d1078db4edd.svg) **{start:%d.%m.%Y} – {end:%d.%m.%Y}**",
+    ]
+    if translated_summary:
+        lines += [translated_summary]
+    if translated_body:
+        lines += ["", translated_body]
+    lines += ["", "*Quelle: GTA Series Videos*"]
+    return "
+".join(lines)
 
 def fetch_gsv_messages(after_id=None):
     token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
@@ -280,7 +462,7 @@ def fetch_gsv_messages(after_id=None):
 
 
 def run_gsv_mirror_poll():
-    print("\nLS-INSIDER – GTA SERIES VIDEOS SPIEGELKANAL")
+    print("\nINSIDER NEU – QUELLKANAL")
     state = load_state()
     last_id = state.get("gsv_last_seen_message_id")
     # A preview inspects recent history regardless of the live polling cursor;
@@ -958,28 +1140,28 @@ def known_concepts(data):
 def format_wednesday(data, source_url):
     start, end = data["period"]
     lines = [
-        "🗞️ **LS-INSIDER**",
+        "[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER**",
         "",
         f"**{data['headline']}**",
-        f"📅 **{start:%d.%m.%Y} – {end:%d.%m.%Y}**",
+        f"[📅](https://discord.com/assets/c05b4d1078db4edd.svg) **{start:%d.%m.%Y} – {end:%d.%m.%Y}**",
         data["intro"],
     ]
     if data["bonuses"]:
-        lines += ["", "💰 **DIE GROSSEN GESCHÄFTE**"] + [f"• {x}" for x in data["bonuses"]]
+        lines += ["", "[💰](https://discord.com/assets/60e4658040396168.svg) **DIE GROSSEN GESCHÄFTE**"] + [f"• {x}" for x in data["bonuses"]]
     if data["vehicles"]:
-        lines += ["", "🚗 **NEUES AUF DEN STRASSEN**"]
+        lines += ["", "[🚗](https://discord.com/assets/136310de891799f5.svg) **NEUES AUF DEN STRASSEN**"]
         lines += [f"**{group}:** {', '.join(items)}" for group, items in data["vehicles"]]
     if data["discounts"]:
-        lines += ["", "🏷️ **LAUFENDE DEALS**"]
+        lines += ["", "[🏷️](https://discord.com/assets/d2de573c80eb944d.svg) **LAUFENDE DEALS**"]
         lines += [f"**{group}:** {', '.join(items)}" for group, items in data["discounts"]]
     if data["gifts"]:
-        lines += ["", "🎁 **GESCHENKE & BEUTE**"] + [f"• {x}" for x in data["gifts"]]
+        lines += ["", "[🎁](https://discord.com/assets/949f113339307625.svg) **GESCHENKE & BEUTE**"] + [f"• {x}" for x in data["gifts"]]
     if data["gta_plus"]:
-        lines += ["", "⭐ **DAS PLUS FÜR EUCH**"] + [f"• {x}" for x in data["gta_plus"]]
+        lines += ["", "[⭐](https://discord.com/assets/6dcab1360be157d5.svg) **DAS PLUS FÜR EUCH**"] + [f"• {x}" for x in data["gta_plus"]]
     if data["challenges"]:
-        lines += ["", "🏆 **DIE WOCHENAUFTRÄGE**"] + [f"• **{name}:** {text}" for name, text in data["challenges"]]
+        lines += ["", "[🏆](https://discord.com/assets/f11aff9f1c8c5f19.svg) **DIE WOCHENAUFTRÄGE**"] + [f"• **{name}:** {text}" for name, text in data["challenges"]]
     if data["rotating"]:
-        lines += ["", "📍 **DIESE WOCHE AKTUELL IN LOS SANTOS**"] + [f"• {x}" for x in data["rotating"]]
+        lines += ["", "[📍](https://discord.com/assets/0da00b0fec31ced4.svg) **DIESE WOCHE AKTUELL IN LOS SANTOS**"] + [f"• {x}" for x in data["rotating"]]
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━━━",
@@ -1000,13 +1182,13 @@ def split_message(text):
         return [text]
 
     section_starts = {
-        "💰 ",
-        "🚗 ",
-        "🏷️ ",
-        "🎁 ",
-        "⭐ ",
-        "🏆 ",
-        "📍 ",
+        "[💰](",
+        "[🚗](",
+        "[🏷️](",
+        "[🎁](",
+        "[⭐](",
+        "[🏆](",
+        "[📍](",
         "━━━━━━━━━━━━━━━━━━━━",
         "🔗 ",
     }
@@ -1408,7 +1590,7 @@ def make_thursday_post(article, new_facts):
 
     lines += [
         "",
-        "🕵️ **INFORMANTENBERICHT**",
+        "**INFORMANTENBERICHT**",
     ]
     lines += [f"• {translate_rockstar(x)}" for x in new_facts[:4]]
     lines += [
@@ -1654,7 +1836,7 @@ def self_test():
     post = format_wednesday(data, "https://example.invalid/article")
     messages = split_message(post)
     assert all(len(message) <= DISCORD_LIMIT for message in messages)
-    assert "⭐ **DAS PLUS FÜR EUCH**" in post
+    assert "[⭐](https://discord.com/assets/6dcab1360be157d5.svg) **DAS PLUS FÜR EUCH**" in post
     assert "DIESE WOCHE AKTUELL IN LOS SANTOS" in post
     assert "0 Comments" not in post
     assert "More GTA Online News" not in post
@@ -1803,9 +1985,9 @@ async def all_posts_test():
     assert wednesday_messages
     assert all(len(message) <= DISCORD_LIMIT for message in wednesday_messages)
     assert len(wednesday_messages) == 2
-    assert "⭐ **DAS PLUS FÜR EUCH**" not in wednesday_messages[0]
-    assert "⭐ **DAS PLUS FÜR EUCH**" in wednesday_messages[1]
-    assert "🗞️ **LS-INSIDER**" in wednesday_post
+    assert "[⭐](https://discord.com/assets/6dcab1360be157d5.svg) **DAS PLUS FÜR EUCH**" not in wednesday_messages[0]
+    assert "[⭐](https://discord.com/assets/6dcab1360be157d5.svg) **DAS PLUS FÜR EUCH**" in wednesday_messages[1]
+    assert "[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER**" in wednesday_post
     print(f"✅ Mittwoch: {len(wednesday_messages)} Nachricht(en), {len(wednesday_post)} Zeichen")
     if DISCORD_POST_TEST:
         print("📨 Sende Mittwoch-Testpost an Discord …")
@@ -1884,10 +2066,11 @@ async def main():
         await all_posts_test()
         return
 
-    self_test()
+    if os.getenv("LS_INSIDER_RUN_SELF_TEST", "false").lower() == "true":
+        self_test()
     now = datetime.now(VIENNA)
     print("========================================")
-    print("LS-INSIDER")
+    print("INSIDER NEU")
     print(f"Wiener Zeit: {now:%d.%m.%Y %H:%M:%S}")
     print(f"TEST_MODE={TEST_MODE}")
     print("========================================")
@@ -1907,3 +2090,12 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
+
+
+
+
+
+
