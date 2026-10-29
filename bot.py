@@ -269,9 +269,7 @@ def gsv_post_title(text, post_type):
         match = re.search(r"GTA Online:\s*(.+?)\s+Event Breakdown", text, flags=re.I)
         event = clean(match.group(1)) if match else "GTA ONLINE EVENT"
         return (
-            f"[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER – SONDERAUSGABE: {event.upper()}**
-
-"
+            f"[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER – SONDERAUSGABE: {event.upper()}**\n\n"
             "**DER GROSSE EVENTFAHRPLAN FÜR LOS SANTOS**"
         )
     return "[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER**"
@@ -281,9 +279,7 @@ def format_gsv_post(text, post_type):
     """Format a source-channel post in the LS-Insider newspaper style."""
     body = re.sub(
         r"^\s*\*\*(Hey\b.*?\(available through\s+[^\)]+\)\.?)\*\*\s*",
-        r"\1
-
-",
+        r"\1\n\n",
         text,
         count=1,
         flags=re.I,
@@ -331,8 +327,7 @@ def format_gsv_post(text, post_type):
     body = re.sub(r"(?m)^\s*#{1,6}\s*", "", body)
     body = re.sub(r"(?im)^GTA Online:\s*.+?Event Breakdown\s*$", "", body)
 
-    summary_match = re.search(r"(?m)^\s*\*([^*
-]+)\*\s*$", body)
+    summary_match = re.search(r"(?m)^\s*\*([^*\n]+)\*\s*$", body)
     summary = clean(summary_match.group(1)) if summary_match else ""
     if summary_match:
         body = body[:summary_match.start()] + body[summary_match.end():]
@@ -400,9 +395,7 @@ def format_gsv_post(text, post_type):
         bonus_count += 1
         label = clean(match.group(0))
         if bonus_count == 1:
-            return f"[💰](https://discord.com/assets/60e4658040396168.svg) **DIE GROSSEN GESCHÄFTE**
-
-**{label}**"
+            return f"[💰](https://discord.com/assets/60e4658040396168.svg) **DIE GROSSEN GESCHÄFTE**\n\n**{label}**"
         return f"**{label}**"
     body = re.sub(r"^[2345]X GTA\$.*", replace_bonus_heading, body, flags=re.I | re.M)
 
@@ -413,9 +406,7 @@ def format_gsv_post(text, post_type):
         percent = match.group(1)
         heading = f"**{percent}% RABATT**" if percent else "**LAUFENDE DEALS**"
         if discount_count == 1:
-            return f"[🏷️](https://discord.com/assets/d2de573c80eb944d.svg) **LAUFENDE DEALS**
-
-{heading}"
+            return f"[🏷️](https://discord.com/assets/d2de573c80eb944d.svg) **LAUFENDE DEALS**\n\n{heading}"
         return heading
     body = re.sub(
         r"^Discounts(?:\s*\((\d{1,3})%\s*OFF\))?",
@@ -439,8 +430,7 @@ def format_gsv_post(text, post_type):
     if translated_body:
         lines += ["", translated_body]
     lines += ["", "*Quelle: GTA Series Videos*"]
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 def fetch_gsv_messages(after_id=None):
     token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
@@ -2090,6 +2080,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
