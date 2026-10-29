@@ -1,3 +1,2 @@
-requests
-beautifulsoup4
-playwright
+requests>=2.31,<3
+playwright>=1.50,<2
