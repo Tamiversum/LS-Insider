@@ -21,6 +21,7 @@ DISCORD_LIMIT = 1950
 TIMEOUT_MS = 60000
 MIRROR_POLL = os.getenv("LS_INSIDER_MIRROR_POLL", "false").lower() == "true"
 GSV_PREVIEW = os.getenv("LS_INSIDER_GSV_PREVIEW", "false").lower() == "true"
+GSV_PUBLISH_NOW = os.getenv("LS_INSIDER_GSV_PUBLISH_NOW", "false").lower() == "true"
 WEDNESDAY_SILENT = os.getenv("LS_INSIDER_WEDNESDAY_SILENT", "false").lower() == "true"
 GSV_CHANNEL_ID = os.getenv("GSV_WEEKLY_CHANNEL_ID", "1553860289102090381")
 DISCORD_API = "https://discord.com/api/v10"
@@ -515,7 +516,9 @@ def fetch_gsv_messages(after_id=None):
 
 
 def run_gsv_mirror_poll():
-    print("\nINSIDER NEU – QUELLKANAL")
+    print("\nINSIDER NEU – MANUELLE VERÖFFENTLICHUNG" if GSV_PUBLISH_NOW else "\nINSIDER NEU – QUELLKANAL")
+    if GSV_PUBLISH_NOW and (TEST_MODE or GSV_PREVIEW):
+        raise RuntimeError("Manuelle Veröffentlichung abgebrochen: Test- oder Vorschau-Modus ist aktiv.")
     state = load_state()
     last_id = state.get("gsv_last_seen_message_id")
     # A preview inspects recent history regardless of the live polling cursor;
@@ -540,6 +543,12 @@ def run_gsv_mirror_poll():
             if recent_weekly or recent_overview:
                 recent.append(item)
         messages = recent
+
+    if GSV_PUBLISH_NOW:
+        eligible = [item for item in messages if classify_gsv_post(gsv_message_text(item))]
+        messages = eligible[-1:]
+        if not messages:
+            print("Kein neuer, noch nicht verarbeiteter GSV-Beitrag zum Veröffentlichen gefunden.")
 
     newest_id = state.get("gsv_last_seen_message_id")
     recognized = 0
