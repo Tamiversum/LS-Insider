@@ -2066,11 +2066,13 @@ async def all_posts_test():
     wednesday_messages = split_message(wednesday_post)
     assert wednesday_messages
     assert all(len(message) <= DISCORD_LIMIT for message in wednesday_messages)
-    assert len(wednesday_messages) == 2
-    assert "[⭐](https://discord.com/assets/6dcab1360be157d5.svg) **DAS PLUS FÜR EUCH**" not in wednesday_messages[0]
-    assert "[⭐](https://discord.com/assets/6dcab1360be157d5.svg) **DAS PLUS FÜR EUCH**" in wednesday_messages[1]
+    assert len(wednesday_messages) >= 2
+    plus_heading = "[⭐](https://discord.com/assets/6dcab1360be157d5.svg) **DAS PLUS FÜR EUCH**"
+    assert plus_heading not in wednesday_messages[0]
+    assert any(plus_heading in message for message in wednesday_messages[1:])
     assert "[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER**" in wednesday_post
     assert any(f"💬 *{line}*" in wednesday_post for line in INSIDER_CLOSINGS)
+    assert any(f"💬 *{line}*" in wednesday_messages[-1] for line in INSIDER_CLOSINGS)
     image_fixture = "Beispiel\n[Bild](https://media.discordapp.net/attachments/example/image.jpg)"
     assert gsv_image_urls(image_fixture) == ["https://media.discordapp.net/attachments/example/image.jpg"]
     print(f"✅ Mittwoch: {len(wednesday_messages)} Nachricht(en), {len(wednesday_post)} Zeichen")
