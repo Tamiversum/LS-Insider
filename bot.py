@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import html
 import json
 import os
@@ -7,7 +8,6 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
-from playwright.async_api import async_playwright
 
 IGTA_NEWS_URL = "https://www.igrandtheftauto.com/gtaonline/news"
 ROCKSTAR_URL = "https://www.rockstargames.com/de/newswire?tag_id=735"
@@ -24,6 +24,31 @@ GSV_PREVIEW = os.getenv("LS_INSIDER_GSV_PREVIEW", "false").lower() == "true"
 WEDNESDAY_SILENT = os.getenv("LS_INSIDER_WEDNESDAY_SILENT", "false").lower() == "true"
 GSV_CHANNEL_ID = os.getenv("GSV_WEEKLY_CHANNEL_ID", "1553860289102090381")
 DISCORD_API = "https://discord.com/api/v10"
+
+INSIDER_CLOSINGS = (
+    "Los Santos schläft nie – wir halten euch auf dem Laufenden.",
+    "Bleibt wachsam und haltet den Motor warm. Bis zur nächsten Ausgabe!",
+    "Passt auf euch auf – in Los Santos ist immer etwas in Bewegung.",
+    "Bis zur nächsten Schlagzeile: Bleibt auf der Überholspur!",
+    "Das war euer LS-Insider. Wir sehen uns in den Straßen von Los Santos.",
+    "Bleibt dran – die nächste Meldung kommt bestimmt.",
+    "Wir behalten die Straßen im Blick. Ihr lest den LS-Insider.",
+    "Haltet den Fluchtwagen bereit – die nächste Ausgabe kommt bestimmt.",
+    "Wir sehen uns in Los Santos – am besten ohne Fahndungslevel.",
+    "Ob Vinewood oder Blaine County: Wir behalten die Lage im Blick.",
+    "Bleibt cool, auch wenn die Cops schon hinter euch sind.",
+    "In Los Santos ist der nächste große Coup nie weit.",
+    "Bis zur nächsten Ausgabe: gute Fahrt und keine Dellen im Fluchtwagen!",
+    "Passt auf euch auf – und auf die Sterne über eurem Kopf.",
+    "Der LS-Insider meldet sich wieder. Bis dahin: keine unnötige Aufmerksamkeit bei der Polizei.",
+)
+
+
+def insider_closing(seed):
+    """Choose a stable but changing sign-off for each distinct edition."""
+    digest = hashlib.sha256(clean(str(seed)).encode("utf-8")).digest()
+    index = int.from_bytes(digest[:4], "big") % len(INSIDER_CLOSINGS)
+    return f"💬 *{INSIDER_CLOSINGS[index]}*"
 
 
 def clean(text: str) -> str:
@@ -69,9 +94,10 @@ def save_state(state):
             json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def post_to_discord(messages):
+def post_to_discord(messages, image_urls=None):
     if isinstance(messages, str):
         messages = [messages]
+    image_urls = unique(image_urls or [])
 
     for index, message in enumerate(messages, 1):
         if len(message) > DISCORD_LIMIT:
@@ -82,20 +108,56 @@ def post_to_discord(messages):
             print(f"TEST_MODE: Discord-Nachricht {index}/{len(messages)} NICHT gesendet ({len(message)} Zeichen)")
             print("--- TEST-NACHRICHT ---")
             print(message)
+        if image_urls:
+            print(f"TEST_MODE: {len(image_urls)} Bild(er) würden als Discord-Bildeinbettungen angehängt:")
+            for url in image_urls:
+                print(f"  {url}")
         return
 
     webhook = os.getenv("DISCORD_WEBHOOK_URL")
     if not webhook:
         raise RuntimeError("DISCORD_WEBHOOK_URL ist nicht gesetzt.")
 
+    image_embeds = [
+        {"image": {"url": url}}
+        for url in image_urls
+        if url.startswith("https://")
+    ]
     for index, message in enumerate(messages, 1):
+        payload = {"content": message, "allowed_mentions": {"parse": []}}
+        if index == len(messages) and image_embeds:
+            payload["embeds"] = image_embeds[:10]
+        response = requests.post(webhook, json=payload, timeout=45)
+        response.raise_for_status()
+        print(f"Discord: Nachricht {index}/{len(messages)} gesendet ({len(message)} Zeichen)")
+
+    for offset in range(10, len(image_embeds), 10):
         response = requests.post(
             webhook,
-            json={"content": message, "allowed_mentions": {"parse": []}},
+            json={"embeds": image_embeds[offset:offset + 10], "allowed_mentions": {"parse": []}},
             timeout=45,
         )
         response.raise_for_status()
-        print(f"Discord: Nachricht {index}/{len(messages)} gesendet ({len(message)} Zeichen)")
+        print(f"Discord: Bildgruppe {offset // 10 + 1} gesendet")
+
+
+GSV_IMAGE_LINK_RE = re.compile(
+    r"(?:(?:!\[[^\]]*\]|\[Bild(?:\s+\d+)?\])\((https?://[^)\s]+)\)|Bild:\s*(https?://\S+))",
+    flags=re.I,
+)
+
+
+def gsv_image_urls(text):
+    urls = []
+    for match in GSV_IMAGE_LINK_RE.finditer(text or ""):
+        url = clean(match.group(1) or match.group(2)).rstrip("\\).,;>")
+        if url.startswith("https://"):
+            urls.append(url)
+    return unique(urls)
+
+
+def remove_gsv_image_links(text):
+    return GSV_IMAGE_LINK_RE.sub("", text or "")
 
 
 def gsv_message_text(message):
@@ -277,6 +339,7 @@ def gsv_post_title(text, post_type):
 
 def format_gsv_post(text, post_type):
     """Format a source-channel post in the LS-Insider newspaper style."""
+    text = remove_gsv_image_links(text)
     body = re.sub(
         r"^\s*\*\*(Hey\b.*?\(available through\s+[^\)]+\)\.?)\*\*\s*",
         r"\1\n\n",
@@ -429,7 +492,7 @@ def format_gsv_post(text, post_type):
         lines += [translated_summary]
     if translated_body:
         lines += ["", translated_body]
-    lines += ["", "*Quelle: GTA Series Videos*"]
+    lines += ["", "*Quelle: GTA Series Videos*", "", insider_closing(text)]
     return "\n".join(lines)
 
 def fetch_gsv_messages(after_id=None):
@@ -487,13 +550,14 @@ def run_gsv_mirror_poll():
         if not post_type:
             continue
         recognized += 1
+        image_urls = gsv_image_urls(text)
         post = format_gsv_post(text, post_type)
         parts = split_message(post)
         label = "SONDERAUSGABE" if post_type == "event_overview" else "WOCHENPOST"
         print(f"GSV {label}: {len(parts)} Discord-Nachricht(en)")
         for part in parts:
             print("--- GSV-POST ---\n" + part)
-        post_to_discord(parts)
+        post_to_discord(parts, image_urls=image_urls)
         state["gsv_last_seen_message_id"] = newest_id
         if not TEST_MODE:
             save_state(state)
@@ -549,6 +613,8 @@ async def extract_visible_page(page):
 
 
 async def fetch_page(url, wait_ms=3500):
+    from playwright.async_api import async_playwright
+
     async with async_playwright() as playwright:
         browser, context = await new_context(playwright)
         try:
@@ -587,6 +653,20 @@ def heading_kind(line):
     for kind, aliases in IGTA_HEADINGS.items():
         if value in aliases:
             return kind
+    # iGTA varies these headings by event (for example, "Halloween Bonuses"
+    # and "Additional Discounts"). Treat those as the same article sections.
+    if value in {"rewards", "halloween rewards", "free rewards"}:
+        return "free"
+    if re.search(r"\b(bonuses|rewards)\b", value) and not re.search(r"\b(weekly challenge|challenges)\b", value):
+        return "bonuses"
+    if "discount" in value:
+        return "discounts"
+    if "vehicle" in value or "showroom" in value:
+        return "vehicles"
+    if "challenge" in value:
+        return "challenges"
+    if any(word in value for word in ("rotating", "other activities", "additional activities", "other content")):
+        return "rotating"
     return None
 
 
@@ -1066,16 +1146,22 @@ def parse_gta_plus_article(full_text):
 
 def make_wednesday_data(weekly_text, gta_plus_text):
     sec = split_sections(weekly_text)
+    all_lines = [clean(line) for line in (weekly_text or "").splitlines() if clean(line)]
+    # Some iGTA article layouts render section titles differently from the
+    # text extractor. Recover recognizable data from the complete article.
+    bonus_lines = sec.get("bonuses", []) or all_lines
+    discount_lines = sec.get("discounts", []) or all_lines
+    challenge_lines = sec.get("challenges", []) or all_lines
     data = {
         "headline": detect_event(weekly_text),
         "period": week_period(),
         "intro": "Die Geschäfte in Los Santos laufen auf Hochtouren. Diese Woche warten wieder erhöhte Auszahlungen, Rabatte und besondere Angebote auf euch.",
-        "bonuses": parse_bonuses(sec.get("bonuses", [])),
+        "bonuses": parse_bonuses(bonus_lines),
         "vehicles": parse_vehicles(sec.get("vehicles", [])),
-        "discounts": parse_percent_groups(sec.get("discounts", [])),
+        "discounts": parse_percent_groups(discount_lines),
         "gifts": parse_gifts(sec, weekly_text),
         "gta_plus": parse_gta_plus_article(gta_plus_text),
-        "challenges": parse_challenges(sec.get("challenges", [])),
+        "challenges": parse_challenges(challenge_lines),
         "rotating": parse_rotating(sec.get("rotating", [])),
     }
     if not data["vehicles"]:
@@ -1158,6 +1244,8 @@ def format_wednesday(data, source_url):
         "",
         "🔗 **QUELLE / VOLLSTÄNDIGER ARTIKEL**",
         f"<{source_url}>",
+        "",
+        insider_closing(source_url),
     ]
     return "\n".join(lines)
 
@@ -1519,8 +1607,7 @@ def is_first_friday(today=None):
 
 
 def make_monthly_agent_report():
-    return "\n".join(
-        [
+    lines = [
             "🕵️ **LS-INSIDER – GEHEIMBERICHT**",
             "",
             "🤫 **Psst … Lagebericht aus Los Santos.**",
@@ -1531,7 +1618,8 @@ def make_monthly_agent_report():
             "",
             "💬 *„Bis dahin heißt es: unauffällig bleiben und aufmerksam sein.“*",
         ]
-    )
+    lines += ["", insider_closing(month_key())]
+    return "\n".join(lines)
 
 
 def translate_rockstar(text):
@@ -1589,11 +1677,15 @@ def make_thursday_post(article, new_facts):
         "",
         "🔗 **ORIGINALMELDUNG ÖFFNEN**",
         f"<{article['url']}>",
+        "",
+        insider_closing(article["url"]),
     ]
     return "\n".join(lines)
 
 
 async def fetch_rockstar_news():
+    from playwright.async_api import async_playwright
+
     async with async_playwright() as playwright:
         browser, context = await new_context(playwright)
         try:
@@ -1978,7 +2070,11 @@ async def all_posts_test():
     assert "[⭐](https://discord.com/assets/6dcab1360be157d5.svg) **DAS PLUS FÜR EUCH**" not in wednesday_messages[0]
     assert "[⭐](https://discord.com/assets/6dcab1360be157d5.svg) **DAS PLUS FÜR EUCH**" in wednesday_messages[1]
     assert "[🗞️](https://discord.com/assets/ea1c712fa1f994a5.svg) **LS-INSIDER**" in wednesday_post
+    assert any(f"💬 *{line}*" in wednesday_post for line in INSIDER_CLOSINGS)
+    image_fixture = "Beispiel\n[Bild](https://media.discordapp.net/attachments/example/image.jpg)"
+    assert gsv_image_urls(image_fixture) == ["https://media.discordapp.net/attachments/example/image.jpg"]
     print(f"✅ Mittwoch: {len(wednesday_messages)} Nachricht(en), {len(wednesday_post)} Zeichen")
+    print("✅ Abschlusszeile und Erkennung von Bildlinks")
     if DISCORD_POST_TEST:
         print("📨 Sende Mittwoch-Testpost an Discord …")
         post_to_discord(wednesday_messages)
@@ -2019,6 +2115,7 @@ async def all_posts_test():
     assert "GEHEIMBERICHT" in thursday_post
     assert "Vapid-Testster-Fahrzeug" in thursday_post
     assert "Ein brandneues Vapid-Testster-Fahrzeug ist jetzt verfügbar." in thursday_post
+    assert any(f"💬 *{line}*" in thursday_post for line in INSIDER_CLOSINGS)
     print(f"✅ Donnerstag mit neuer Info: {len(thursday_messages)} Nachricht(en), Post wird erzeugt")
     if DISCORD_POST_TEST:
         print("📨 Sende Donnerstag-Testpost an Discord …")
@@ -2027,6 +2124,7 @@ async def all_posts_test():
     monthly = make_monthly_agent_report()
     assert "LS-INSIDER – GEHEIMBERICHT" in monthly
     assert "Keine neuen Vorkommnisse zu melden." in monthly
+    assert any(f"💬 *{line}*" in monthly for line in INSIDER_CLOSINGS)
     print("✅ Freitag: Monatsbericht wird erzeugt")
     if DISCORD_POST_TEST:
         print("📨 Sende Freitag-Testpost an Discord …")
@@ -2045,6 +2143,8 @@ async def all_posts_test():
 
 async def main():
     if MIRROR_POLL:
+        if GSV_PREVIEW and ALL_POSTS_TEST:
+            await all_posts_test()
         run_gsv_mirror_poll()
         return
 
