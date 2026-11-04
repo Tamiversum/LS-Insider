@@ -28,7 +28,11 @@ on:
         required: false
         type: boolean
         default: false
-
+      gsv_publish_now:
+        description: "Neuesten noch nicht verarbeiteten GSV-Beitrag jetzt veröffentlichen"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "0 23 * * 3"
       timezone: "Europe/Vienna"
@@ -36,7 +40,7 @@ on:
       timezone: "Europe/Vienna"
     - cron: "0 15 * * 5"
       timezone: "Europe/Vienna"
-    - cron: "*/20 * * * *"
+    - cron: "7,27,47 * * * *"
       timezone: "Europe/Vienna"
 
 permissions:
@@ -68,8 +72,9 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
           LS_INSIDER_GSV_PREVIEW: ${{ inputs.gsv_preview }}
+          LS_INSIDER_GSV_PUBLISH_NOW: ${{ inputs.gsv_publish_now }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "schedule" && "$GITHUB_EVENT_SCHEDULE" == "*/20 * * * *" || "$LS_INSIDER_GSV_PREVIEW" == "true" ]]; then
+          if [[ ( "$GITHUB_EVENT_NAME" == "schedule" && "$GITHUB_EVENT_SCHEDULE" == "7,27,47 * * * *" ) || "$LS_INSIDER_GSV_PREVIEW" == "true" || "$LS_INSIDER_GSV_PUBLISH_NOW" == "true" ]]; then
             python -m pip install requests
           else
             python -m pip install -r requirements.txt
@@ -83,10 +88,11 @@ jobs:
           LS_INSIDER_ALL_POSTS_TEST: ${{ inputs.all_posts_test }}
           LS_INSIDER_DISCORD_POST_TEST: ${{ inputs.discord_post_test }}
           LS_INSIDER_GSV_PREVIEW: ${{ inputs.gsv_preview }}
+          LS_INSIDER_GSV_PUBLISH_NOW: ${{ inputs.gsv_publish_now }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "schedule" && "$GITHUB_EVENT_SCHEDULE" == "*/20 * * * *" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" && "$GITHUB_EVENT_SCHEDULE" == "7,27,47 * * * *" ]]; then
             echo "Quellkanal-Lauf: Chromium wird nicht benötigt."
-          elif [[ "$LS_INSIDER_QUICK_TEST" == "true" || "$LS_INSIDER_ALL_POSTS_TEST" == "true" || "$LS_INSIDER_DISCORD_POST_TEST" == "true" || "$LS_INSIDER_GSV_PREVIEW" == "true" ]]; then
+          elif [[ "$LS_INSIDER_QUICK_TEST" == "true" || "$LS_INSIDER_ALL_POSTS_TEST" == "true" || "$LS_INSIDER_DISCORD_POST_TEST" == "true" || "$LS_INSIDER_GSV_PREVIEW" == "true" || "$LS_INSIDER_GSV_PUBLISH_NOW" == "true" ]]; then
             echo "Offline-Test oder Vorschau: Chromium wird nicht benötigt."
           else
             python -m playwright install --with-deps chromium
@@ -98,8 +104,9 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
           GSV_WEEKLY_CHANNEL_ID: "1553860289102090381"
-          LS_INSIDER_MIRROR_POLL: ${{ (github.event_name == 'schedule' && github.event.schedule == '*/20 * * * *') || (github.event_name == 'workflow_dispatch' && inputs.gsv_preview) }}
+          LS_INSIDER_MIRROR_POLL: ${{ (github.event_name == 'schedule' && github.event.schedule == '7,27,47 * * * *') || (github.event_name == 'workflow_dispatch' && (inputs.gsv_preview || inputs.gsv_publish_now)) }}
           LS_INSIDER_GSV_PREVIEW: ${{ inputs.gsv_preview }}
+          LS_INSIDER_GSV_PUBLISH_NOW: ${{ inputs.gsv_publish_now }}
           LS_INSIDER_TEST_MODE: ${{ inputs.test_mode || inputs.gsv_preview }}
           LS_INSIDER_QUICK_TEST: ${{ inputs.quick_test }}
           LS_INSIDER_ALL_POSTS_TEST: ${{ inputs.all_posts_test }}
@@ -115,8 +122,9 @@ jobs:
           LS_INSIDER_QUICK_TEST: ${{ inputs.quick_test }}
           LS_INSIDER_ALL_POSTS_TEST: ${{ inputs.all_posts_test }}
           LS_INSIDER_DISCORD_POST_TEST: ${{ inputs.discord_post_test }}
+          LS_INSIDER_GSV_PUBLISH_NOW: ${{ inputs.gsv_publish_now }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "schedule" && "$LS_INSIDER_TEST_MODE" != "true" && "$LS_INSIDER_QUICK_TEST" != "true" && "$LS_INSIDER_ALL_POSTS_TEST" != "true" && "$LS_INSIDER_DISCORD_POST_TEST" != "true" && -f weekly_state.json ]]; then
+          if [[ ( "$GITHUB_EVENT_NAME" == "schedule" && "$LS_INSIDER_TEST_MODE" != "true" && "$LS_INSIDER_QUICK_TEST" != "true" && "$LS_INSIDER_ALL_POSTS_TEST" != "true" && "$LS_INSIDER_DISCORD_POST_TEST" != "true" ) || ( "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$LS_INSIDER_GSV_PUBLISH_NOW" == "true" ) ]] && [[ -f weekly_state.json ]]; then
             git config user.name "LS-Insider Bot"
             git config user.email "ls-insider-bot@users.noreply.github.com"
             git add weekly_state.json
